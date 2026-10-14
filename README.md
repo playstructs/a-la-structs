@@ -31,28 +31,66 @@ Pick a critter, name your restaurant, then choose:
 
 ### Connecting to a guild
 
-The webapp core expects to be served from the guild's origin (session cookies,
-relative `/api`). The dev server proxies a guild for you:
+Choose **Open for real**, then pick a guild. Nothing about a guild is
+hardcoded: each guild publishes a config file (the `endpoint` on its on-chain
+record), and À la Structs reads the services from it:
 
-```bash
-cp .env.example .env     # set GUILD_URL (and GRASS_URL / RPC_URL if they aren't on this host)
-npm run dev
-```
+1. `GET {reactor}/structs/guild/{id}` → the guild's `endpoint`
+2. fetch that config → `services.guild_api`, `services.grass_nats_websocket`, …
+3. talk to those directly: the guild API over CORS (with credentials, for the
+   session cookie), GRASS and the chain RPC over websockets.
 
-With the structs-webapp docker stack running locally the defaults already
-work (`/api` → `localhost:8080`, GRASS on `:1443`, RPC on `:26657`).
+The picker lists the guilds on chain and greys out ones that can't take
+browser players, with the reason: no guild API, `guild.json` not shared with
+other sites (CORS), unreachable, or a guild API that refuses this origin
+(checked with `GET {guild_api}/timestamp`).
 
-For production, `npm run build` and serve `dist/` from the guild webapp's
-domain (for example under `public/a-la-structs/`), or put both behind the
-same reverse proxy.
+`guild.json` is treated as hostile input, following structs.xyz's onboarding
+rules: reads are capped at 64 KB and 2.5 s with no redirects, `guild.id` must
+match the chain, strings are truncated, and service URLs must be https/wss on a
+public hostname (no IP literals, localhost, `.local`-style or wildcard-DNS
+hosts; loopback only when the page and the LCD are both on loopback). A guild
+without a usable `wss://` event stream uses `wss://beta.playstructs.com:1443`.
+The chain REST API (LCD) defaults to `https://public.testnet.structs.network`
+(`VITE_LCD_URL`).
+
+Sign-up is the guild-stack proxy join: the browser signs
+`GUILD{id}ADDRESS{addr}NONCE0`, the guild broadcasts the join, and the client
+waits for the player on GRASS — and, in case the stream is down, also polls
+`GET {LCD}/structs/address/{addr}` and finishes the login itself.
+`.env.example` lists the local overrides — for example `GRASS_URL` relays the
+event stream through the dev server if your browser can't reach it directly.
+
+`GUILD_URL` switches back to the older same-origin mode: the dev server proxies
+`/api` to that one guild and the picker is skipped. Use it when a guild's API
+doesn't allow cross-origin requests yet, or when the page is served by the
+guild itself.
 
 New owners get a recovery phrase in-game (the guild signs them up and opens a
 first restaurant). Existing Structs players sign in with their recovery phrase,
 which registers the browser as another device — the same flow as the webapp.
 
+### Guild chat (Matrix)
+
+In live mode the town chat is the guild's real Matrix chat. Sign-in is one
+request: the page signs the same `LOGIN_GUILD…` message it uses for the guild
+API and posts it to `POST {guild_api}/auth/matrix`, which does the OAuth dance
+with the guild's auth service server-side and returns tokens. No pop-up,
+redirect or relay, so it works the same on `127.0.0.1` and on a real domain.
+The page then checks `whoami` matches the account the guild returned, long-polls
+`/sync` for the guild room, refreshes tokens at the auth service, and revokes
+them on sign-out. Tokens live only in memory.
+
+The homeserver comes from the guild config (`services.matrix_homeserver`) or
+the user id's `.well-known/matrix/client`; the room from
+`services.matrix_room`, or the busiest non-DM room the account is in.
+`VITE_MATRIX_HOMESERVER` / `VITE_MATRIX_ROOM` override both. If the guild has
+no `/auth/matrix`, chat falls back to the town square below.
+
 ### Town square (presence + chat)
 
-Structs has no chat or avatars, so À la Structs brings a tiny relay:
+Structs has no avatars, so walking around the square uses a tiny relay (and,
+without guild chat, the chat too):
 
 ```bash
 npm run hangout                      # ws://0.0.0.0:8787
@@ -133,6 +171,8 @@ src/
     LiveService.js    structs-webapp core wired up without its screens
     live-entry.js     lazy-loaded so the demo never downloads the chain stack
     Hangout.js        town presence + chat (relay / tabs / demo bots)
+    live/guildConfig.js  guild id → on-chain record → published config → endpoints
+    live/MatrixChat.js   guild Matrix chat via POST {guild_api}/auth/matrix
   three/          engine, toon look, critter builder, outfits, items, props, FX,
                   floor plan + routing, duties (what each role does all day),
                   scenes: Restaurant, Challenge, Town

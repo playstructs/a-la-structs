@@ -133,16 +133,26 @@ export class App {
     this.ui.appendChild(h('div', { class: 'title' }, card));
     const say = (title, ...rest) => { clear(card); card.append(h('div', { class: 'logo' }, h('h1', { style: { fontSize: '2rem' } }, title)), ...rest); };
     say('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, 'Connecting to the guild’s kitchen.'));
-    let svc;
+    let svc, mod;
+    try { mod = await this.loadLive(); } catch (e) {
+      console.error(e);
+      return say('Couldn’t load the guild client', h('div', { class: 'note warn' }, esc(e.message || e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+    }
+    // Same-origin mode (GUILD_URL proxy, or served by the guild itself) skips the picker.
+    const sameOrigin = !!((import.meta.env || {}).VITE_GUILD_PROXY);
+    const guild = sameOrigin ? null : await this.pickGuild(mod, say);
+    if (!sameOrigin && !guild) return this.showTitle();
+    say('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${esc(guild?.name || 'the guild')}’s kitchen.`));
     try {
-      const mod = await this.loadLive();
-      svc = new mod.LiveService({ workerUrl: mod.workerUrl });
+      svc = new mod.LiveService({ workerUrl: mod.workerUrl, guild });
+      this.liveMod = mod;
       await this.useService(svc);
       const signedIn = await svc.start();
       if (signedIn) { this.applyProfile(); return this.enterGame(); }
     } catch (e) {
       console.error(e);
-      return say('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${esc(e.message || e)}. Check that the guild webapp is running and that this page is served through it (see README).`), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+      const hint = sameOrigin ? 'Check that the guild in GUILD_URL is running (see README).' : 'The guild’s services may be down, or may not accept requests from this page (CORS).';
+      return say('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${esc(e.message || e)}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
     }
     const guildName = svc.state.guildInfo?.name || 'this guild';
     const choose = () => say(`Welcome to ${guildName}`,
@@ -173,6 +183,50 @@ export class App {
         h('button', { class: 'btn wide ghost', onclick: choose }, 'Back'));
     };
     choose();
+  }
+
+  /**
+   * Choose a guild by id. Its services come from the guild's own published
+   * config (on-chain record → endpoint → services), not from this app.
+   * Resolves to the resolved guild, or null on Back.
+   */
+  pickGuild(mod, say) {
+    const env = import.meta.env || {};
+    const last = mod.lastGuild();
+    let chosen = this.prefs.guildId || last?.id || env.VITE_GUILD_ID || '0-1';
+    return new Promise((resolve) => {
+      const input = h('input', { id: 'guild-id', value: chosen, placeholder: '0-1', autocomplete: 'off', spellcheck: 'false', oninput: (e) => { chosen = e.target.value.trim(); } });
+      const list = h('div', { class: 'guild-list', role: 'listbox', 'aria-label': 'Guilds on the chain' }, h('small', {}, 'Looking up guilds on the chain…'));
+      const err = h('div', { class: 'note warn', hidden: true });
+      const go = h('button', { class: 'btn wide', onclick: async () => {
+        if (!chosen) return;
+        go.disabled = true; go.textContent = 'Reading the guild’s config…'; err.hidden = true;
+        try {
+          const g = await mod.resolveGuild(chosen, mod.DEFAULT_REACTOR);
+          this.prefs.guildId = g.id; this.savePrefs();
+          resolve(g);
+        } catch (e) {
+          err.textContent = e.message || String(e); err.hidden = false;
+          go.disabled = false; go.textContent = 'Connect';
+        }
+      } }, 'Connect');
+      say('Pick your restaurant group',
+        h('p', { style: { textAlign: 'center', margin: 0 } }, 'Every Structs guild publishes where its services live. Choose one and we’ll read it from there.'),
+        h('div', { class: 'field' }, h('label', { for: 'guild-id' }, 'Guild id'), input),
+        list, err, go,
+        h('button', { class: 'btn wide ghost', onclick: () => resolve(null) }, 'Back'));
+      mod.browsableGuilds(mod.DEFAULT_REACTOR).then((rows) => {
+        clear(list);
+        if (!rows.length) { list.append(h('small', {}, 'No guilds found on the chain.')); return; }
+        for (const r of rows) {
+          list.append(h('button', {
+            class: `guild-row ${r.id === chosen ? 'on' : ''}`, role: 'option', 'aria-selected': r.id === chosen ? 'true' : 'false', disabled: !r.ok, title: r.ok ? (r.description || r.name) : r.why,
+            onclick: () => { chosen = r.id; input.value = r.id; list.querySelectorAll('.guild-row').forEach((b) => { const on = b.dataset.id === r.id; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); }); },
+            'data-id': r.id,
+          }, h('b', {}, r.name), h('small', {}, [r.id, r.tag && `[${r.tag}]`, r.why].filter(Boolean).join(' · '))));
+        }
+      }, (e) => { clear(list); list.append(h('small', {}, `Couldn’t list guilds (${esc(e.message || e)}). You can still type an id.`)); });
+    });
   }
 
   applyProfile() {
@@ -609,14 +663,18 @@ export class App {
     clear(this.overlay);
     const log = h('div', { class: 'log', 'aria-live': 'polite' });
     const input = h('input', { id: 'chat-input', placeholder: 'Say something to the group…', maxlength: '240', autocomplete: 'off', 'aria-label': 'Chat message' });
-    const form = h('form', { onsubmit: (e) => { e.preventDefault(); this.hangout?.say(input.value); input.value = ''; } }, input, h('button', { class: 'btn small sea', type: 'submit' }, 'Send'));
+    const form = h('form', { onsubmit: (e) => { e.preventDefault(); this.sayInTown(input.value); input.value = ''; } }, input, h('button', { class: 'btn small sea', type: 'submit' }, 'Send'));
     this.onlineEl = h('span', { class: 'online' });
     const narrow = window.innerWidth < 720;
     const chat = h('section', { class: `chat ${narrow ? 'min' : ''}`, 'aria-label': 'Group chat' });
-    const head = h('button', { class: 'chat-head', 'aria-expanded': narrow ? 'false' : 'true', onclick: () => { const min = chat.classList.toggle('min'); head.setAttribute('aria-expanded', min ? 'false' : 'true'); } }, icon('chat'), `${esc(g.group?.name || 'Group')} chat`, this.onlineEl);
+    this.chatTitle = h('span', {}, `${esc(g.group?.name || 'Group')} chat`);
+    this.chatGroupName = g.group?.name || 'Group';
+    const head = h('button', { class: 'chat-head', 'aria-expanded': narrow ? 'false' : 'true', onclick: () => { const min = chat.classList.toggle('min'); head.setAttribute('aria-expanded', min ? 'false' : 'true'); } }, icon('chat'), this.chatTitle, this.onlineEl);
     chat.append(head, log, form);
     this.chatLog = log;
-    for (const m of this.hangout?.history || []) this.appendChat(m);
+    const past = this.matrix?.live ? this.matrix.history : (this.hangout?.history || []);
+    for (const m of past) this.appendChat(m);
+    this.updateChatTitle();
     this.overlay.append(
       h('div', { class: 'town-hint' }, h('kbd', {}, 'WASD'), ' or click to walk · ', h('kbd', {}, 'E'), ' to peek inside · ', h('kbd', {}, 'Space'), ' to wave'),
       chat);
@@ -626,7 +684,7 @@ export class App {
   appendChat(m) {
     if (!this.chatLog) return;
     const me = m.from === this.svc.state.me.id;
-    this.chatLog.appendChild(h('div', { class: `msg ${me ? 'me' : ''}` }, h('b', {}, m.name || 'Someone'), m.text));
+    this.chatLog.appendChild(h('div', { class: `msg ${me ? 'me' : ''}` }, h('b', {}, m.name || (me ? this.svc.state.me.name : 'Someone')), m.text));
     this.chatLog.scrollTop = this.chatLog.scrollHeight;
   }
 
@@ -634,6 +692,44 @@ export class App {
     if (!this.onlineEl || !this.hangout) return;
     const n = this.hangout.peers.size + 1;
     this.onlineEl.textContent = `${n} in town`;
+  }
+
+  /** Town chat goes to the guild's Matrix room when we're signed in to it. */
+  sayInTown(text) {
+    if (this.matrix?.live) this.matrix.say(text, this.svc.state.me.name);
+    else this.hangout?.say(text);
+  }
+
+  updateChatTitle() {
+    if (!this.chatTitle) return;
+    const live = this.matrix?.live;
+    this.chatTitle.textContent = live ? `${this.matrix.roomName || this.chatGroupName} · guild chat` : `${this.chatGroupName} chat`;
+    this.chatTitle.title = live ? 'Messages go to your guild’s Matrix room' : 'Town square chat';
+  }
+
+  /** Live only: sign in to the guild's Matrix chat; the town square keeps presence. */
+  async startMatrixChat() {
+    if (this.svc?.mode !== 'live' || this.matrix || this.matrixStarting) return;
+    this.matrixStarting = true;
+    const s = this.svc.state;
+    try {
+      const { homeserver, session } = await this.svc.chatSignIn();
+      const chat = new this.liveMod.MatrixChat({ homeserver, session, selfId: s.me.id, room: this.svc.guild?.matrixRoom || null, guild: { id: s.me.guildId, name: s.me.guildName } });
+      chat.addEventListener('chat', (e) => { this.appendChat(e.detail); this.townScene?.chat(e.detail); if (this.view === 'town' && e.detail.from !== s.me.id) sfx.chat(); });
+      chat.addEventListener('status', (e) => {
+        this.updateChatTitle();
+        if (e.detail.ended) { this.announce({ text: e.detail.message, tone: 'bad' }); this.matrix = null; }
+      });
+      chat.addEventListener('error', (e) => this.announce({ text: e.detail.message, tone: 'bad' }));
+      await chat.start();
+      this.matrix = chat;
+      // Replace the square's local chat with the room's history.
+      if (this.chatLog) { clear(this.chatLog); for (const m of chat.history) this.appendChat(m); }
+      this.updateChatTitle();
+    } catch (e) {
+      console.warn('[chat]', e);
+      this.announce({ text: `Guild chat isn’t available: ${e.message || e}. Using the town square instead.`, tone: 'info' });
+    } finally { this.matrixStarting = false; }
   }
 
   startHangout() {
@@ -651,6 +747,7 @@ export class App {
       if (this.townScene) this.townScene.hangout = this.hangout;
     };
     make();
+    this.startMatrixChat();
   }
 
   /* ── misc ─────────────────────────────────────────────────────────────── */
@@ -690,7 +787,7 @@ export class App {
   confirm(title, text, yes, fn) { this.modal(icon('info', 'big-icon'), title, text, [[yes, fn, 'berry'], ['Never mind', null]]); }
 
   backToTitle() {
-    if (this.svc?.mode === 'live') { this.svc.logout(); return; }
+    if (this.svc?.mode === 'live') { Promise.resolve(this.matrix?.stop()).finally(() => this.svc.logout()); return; }
     clearInterval(this.hudTimer);
     this.svc?.stop();
     this.hangout?.stop(); this.hangout = null;

@@ -48,6 +48,8 @@ import { PLAYER_TYPES } from '../../vendor/structs-webapp/js/constants/PlayerTyp
 import { RAID_STATUS } from '../../vendor/structs-webapp/js/constants/RaidStatus.js';
 import { LOG_LEVEL } from '../../vendor/structs-webapp/js/constants/GrassConstants.js';
 import { TX_STATUS } from '../../vendor/structs-webapp/js/models/SigningTransaction.js';
+import { signInViaGuild, discoverHomeserver, matrixDeviceId } from './live/MatrixChat.js';
+import { playerIdForAddress } from './live/guildConfig.js';
 
 const P = PLAYER_TYPES;
 
@@ -65,9 +67,17 @@ export function liveEndpoints(overrides = {}) {
 }
 
 export class LiveService extends Service {
+  /**
+   * @param {object} [opts]
+   * @param {object} [opts.guild]  resolved guild (live/guildConfig.js resolveGuild):
+   *   { id, api, grass, rpc, matrix, name }. Without it the page must be served
+   *   through the guild (or the dev proxy) and uses same-origin /api.
+   */
   constructor(opts = {}) {
     super('live');
-    this.endpoints = liveEndpoints(opts.endpoints || {});
+    this.guild = opts.guild || null;
+    const fromGuild = this.guild ? { api: this.guild.api, grass: this.guild.grass, rpc: this.guild.rpc } : {};
+    this.endpoints = liveEndpoints({ ...fromGuild, ...(opts.endpoints || {}) });
     this.state.tickMs = 6000;
     this.opts = opts;
     this.wire();
@@ -83,6 +93,16 @@ export class LiveService extends Service {
     const guildAPI = this.api = new GuildAPI();
     guildAPI.apiUrl = this.endpoints.api;
     gameState.guildAPI = guildAPI;
+    // Talking to the guild API on another origin (CORS): our own guild gets
+    // credentials so its session cookie comes along. The vendored ajaxer
+    // never sets them, so wrap its send() rather than edit vendor code.
+    if (/^https?:\/\//.test(this.endpoints.api) && new URL(this.endpoints.api).origin !== location.origin) {
+      guildAPI.ajax.send = (method, url, data) => fetch(url, {
+        method, redirect: 'follow', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: data === undefined ? undefined : JSON.stringify(data),
+      });
+    }
 
     const walletManager = this.walletManager = new WalletManager();
     this.grass = new GrassManager(this.endpoints.grass, 'structs.>', gameState, LOG_LEVEL.NONE);
@@ -153,7 +173,7 @@ export class LiveService extends Service {
     gs.settings = await this.api.getSettings();
     gs.thisGuild = await this.api.getThisGuild();
     this.state.me.guildId = gs.thisGuild?.id;
-    this.state.me.guildName = gs.thisGuild?.name || '';
+    this.state.me.guildName = gs.thisGuild?.name || this.guild?.name || '';
     this.state.guildInfo = gs.thisGuild;
     setInterval(() => {
       this.grass.resumeCheck(); this.blockGrass.resumeCheck(); this.signing.resumeCheck(false).then();
@@ -169,6 +189,22 @@ export class LiveService extends Service {
     return false;
   }
 
+  /**
+   * Sign in to the guild's Matrix chat with the same signed login the guild API
+   * uses. Returns { homeserver, session } for live/MatrixChat.js.
+   */
+  async chatSignIn() {
+    const gs = this.gs;
+    if (!gs.signingAccount || !gs.thisGuild) throw new Error('Sign in to the guild first');
+    const login = await this.auth.buildLoginRequest();
+    const session = await signInViaGuild(this.endpoints.api, {
+      address: login.address, pubkey: login.pubkey, signature: login.signature,
+      guild_id: login.guild_id, unix_timestamp: login.unix_timestamp,
+    }, matrixDeviceId());
+    const homeserver = this.guild?.matrix || import.meta.env?.VITE_MATRIX_HOMESERVER || await discoverHomeserver(session.user_id);
+    return { homeserver, session };
+  }
+
   hasSavedPlayer() { return !!(this.gs.keyPlayers[P.PLAYER].id && this.gs.mnemonic); }
 
   newRecoveryPhrase() { return this.walletManager.createMnemonic(); }
@@ -180,6 +216,10 @@ export class LiveService extends Service {
     gs.signupRequest.username = username || null;
     const ok = await this.auth.signup(mnemonic);
     if (!ok) throw new Error('The guild did not accept the sign-up.');
+    // The webapp waits for the PLAYER_CREATED frame on GRASS. If the stream is
+    // down that never comes, so also watch the chain directly (LCD) and finish
+    // the login ourselves if GRASS hasn't a few seconds after the player lands.
+    this.watchSignupOnChain(gs.signingAccount.address);
     await this.waitFor(() => gs.keyPlayers[P.PLAYER].player && gs.keyPlayers[P.PLAYER].planet, 180000, 'Waiting for your first restaurant to open…');
     gs.save();
     await this.afterLogin();
@@ -194,6 +234,23 @@ export class LiveService extends Service {
     await Promise.race([done, this.waitFor(() => gs.keyPlayers[P.PLAYER].planet, 180000)]);
     gs.save();
     await this.afterLogin();
+  }
+
+  async watchSignupOnChain(address) {
+    const reactor = this.guild?.reactor;
+    const t0 = Date.now();
+    let n = 0;
+    while (Date.now() - t0 < 240000 && !this.gs.keyPlayers[P.PLAYER].id) {
+      await new Promise((r) => setTimeout(r, n++ < 5 ? 3000 : 6000));
+      const id = await playerIdForAddress(address, reactor);
+      if (!id) continue;
+      await new Promise((r) => setTimeout(r, 8000)); // give GRASS its chance first
+      if (this.gs.keyPlayers[P.PLAYER].id) return;
+      console.info('[signup] player found on chain, finishing login without GRASS');
+      await this.auth.login(id);
+      if (!this.gs.keyPlayers[P.PLAYER].planet) await this.planetManager.findNewPlanet();
+      return;
+    }
   }
 
   async waitFor(fn, ms, note) {
