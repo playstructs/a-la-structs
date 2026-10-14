@@ -1,0 +1,517 @@
+import {PlayerCreatedListener} from "../grass_listeners/PlayerCreatedListener";
+import {LoginRequestDTO} from "../dtos/LoginRequestDTO";
+import {KeyPlayerOreListener} from "../grass_listeners/KeyPlayerOreListener";
+import {PlayerCapacityListener} from "../grass_listeners/PlayerCapacityListener";
+import {PlayerLoadListener} from "../grass_listeners/PlayerLoadListener";
+import {PlayerStructsLoadListener} from "../grass_listeners/PlayerStructsLoadListener";
+import {ConnectionCapacityListener} from "../grass_listeners/ConnectionCapacityListener";
+import {PlayerAlphaListener} from "../grass_listeners/PlayerAlphaListener";
+import {MenuPage} from "../framework/MenuPage";
+import {PlanetManager} from "./PlanetManager";
+import {NewPlanetListener} from "../grass_listeners/NewPlanetListener";
+import {AddPendingAddressRequestDTO} from "../dtos/AddPendingAddressRequestDTO";
+import {PlayerAddressApprovedLoginListener} from "../grass_listeners/PlayerAddressApprovedLoginListener";
+import {PlayerAddressPendingCreatedListener} from "../grass_listeners/PlayerAddressPendingCreatedListener";
+import {PlayerAddressPendingFactory} from "../factories/PlayerAddressPendingFactory";
+import {SetPendingAddressPermissionsRequestDTO} from "../dtos/SetPendingAddressPermissionsRequestDTO";
+import {PlayerAddressApprovedListener} from "../grass_listeners/PlayerAddressApprovedListener";
+import {PlayerAddressRevokedListener} from "../grass_listeners/PlayerAddressRevokedListener";
+import {AlphaChangeListener} from "../grass_listeners/AlphaChangeListener";
+import {PlanetRaidStatusListener} from "../grass_listeners/PlanetRaidStatusListener";
+import {StructListener} from "../grass_listeners/StructListener";
+import {StructMineStatusListener} from "../grass_listeners/StructMineStatusListener";
+import {StructRefineStatusListener} from "../grass_listeners/StructRefineStatusListener";
+import {PLAYER_TYPES} from "../constants/PlayerTypes";
+import {KeyPlayerLastActionListener} from "../grass_listeners/KeyPlayerLastActionListener";
+import {KeyPlayerShieldChangeStatusListener} from "../grass_listeners/KeyPlayerShieldChangeStatusListener";
+import {LoginCompleteEvent} from "../events/LoginCompleteEvent";
+import {PlanetRaidStatusChangedEvent} from "../events/PlanetRaidStatusChangedEvent";
+import {TX_STATUS} from "../models/SigningTransaction";
+import {RecoverAccountAddressApprovedListener} from "../grass_listeners/RecoverAccountAddressApprovedListener";
+
+export class AuthManager {
+
+  /**
+   * @param {GameState} gameState
+   * @param {GuildAPI} guildAPI
+   * @param {WalletManager} walletManager
+   * @param {GrassManager} grassManager
+   * @param {SigningClientManager} signingClientManager
+   * @param {PlanetManager} planetManager
+   * @param {PlayerAddressManager} playerAddressManager
+   * @param {PlayerAddressPendingFactory} playerAddressPendingFactory
+   * @param {RaidManager} raidManager
+   * @param {MapManager} mapManager
+   * @param {TaskManager} taskManager
+   * @param {StructManager} structManager
+   * @param {DestroyedStructManager} destroyedStructManager
+   * @param {PermissionManager} permissionManager
+   */
+  constructor(
+    gameState,
+    guildAPI,
+    walletManager,
+    grassManager,
+    signingClientManager,
+    planetManager,
+    playerAddressManager,
+    playerAddressPendingFactory,
+    raidManager,
+    mapManager,
+    taskManager,
+    structManager,
+    destroyedStructManager,
+    permissionManager,
+  ) {
+    this.gameState = gameState;
+    this.guildAPI = guildAPI;
+    this.walletManager = walletManager;
+    this.grassManager = grassManager;
+    this.signingClientManager = signingClientManager;
+    this.planetManager = planetManager;
+    this.playerAddressManager = playerAddressManager;
+    this.playerAddressPendingFactory = playerAddressPendingFactory;
+    this.raidManager = raidManager;
+    this.mapManager = mapManager;
+    this.taskManager = taskManager;
+    this.structManager = structManager;
+    this.destroyedStructManager = destroyedStructManager;
+    this.permissionManager = permissionManager;
+  }
+
+  /**
+   * @param {string} mnemonic
+   * @return {Promise<void>}
+   */
+  async initWallet(mnemonic) {
+    this.gameState.wallet = await this.walletManager.createWallet(mnemonic);
+    const accounts = await this.gameState.wallet.getAccountsWithPrivkeys();
+    this.gameState.signingAccount = accounts[0];
+    this.gameState.pubkey = this.walletManager.bytesToHex(this.gameState.signingAccount.pubkey);
+  }
+
+  /**
+   * @param {string} mnemonic
+   * @return {Promise<boolean>}
+   */
+  async signup(mnemonic) {
+    await this.initWallet(mnemonic);
+
+    this.gameState.signupRequest.pubkey = this.gameState.pubkey;
+    this.gameState.signupRequest.primary_address = this.gameState.signingAccount.address;
+    this.gameState.signupRequest.guild_id = this.gameState.thisGuild.id;
+
+    const message = this.guildAPI.buildGuildMembershipJoinProxyMessage(
+      this.gameState.signupRequest.guild_id,
+      this.gameState.signupRequest.primary_address,
+      0
+    );
+
+    this.gameState.signupRequest.signature = await this.walletManager.createSignatureForProxyMessage(
+      message,
+      this.gameState.signingAccount.privkey
+    );
+
+    const playerCreatedListener = new PlayerCreatedListener();
+    playerCreatedListener.guildId = this.gameState.signupRequest.guild_id;
+    playerCreatedListener.playerAddress = this.gameState.signupRequest.primary_address;
+    playerCreatedListener.authManager = this;
+    playerCreatedListener.guildAPI = this.guildAPI;
+    playerCreatedListener.gameState = this.gameState;
+    playerCreatedListener.grassManager = this.grassManager;
+    playerCreatedListener.planetManager = this.planetManager;
+
+    const newPlanetListener = new NewPlanetListener(
+      this.gameState,
+      this.guildAPI,
+      this.mapManager
+    );
+    newPlanetListener.redirectControllerName = 'Auth';
+    newPlanetListener.redirectPageName = 'orientation1';
+
+    // Needs to be registered first because it listens for planet_id whose creation is trigger by playerCreatedListener.
+    this.grassManager.registerListener(newPlanetListener);
+
+    this.grassManager.registerListener(playerCreatedListener);
+
+    const response = await this.guildAPI.signup(this.gameState.signupRequest);
+
+    return response.success;
+  }
+
+  /**
+   * @return {Promise<LoginRequestDTO>}
+   */
+  async buildLoginRequest() {
+    const timestamp = await this.guildAPI.getTimestamp();
+
+    const request = new LoginRequestDTO();
+    request.address = this.gameState.signingAccount.address;
+    request.pubkey = this.gameState.pubkey;
+    request.guild_id = this.gameState.thisGuild.id;
+    request.unix_timestamp = timestamp;
+
+    const message = this.guildAPI.buildLoginMessage(
+      request.guild_id,
+      request.address,
+      timestamp
+    );
+
+    request.signature = await this.walletManager.createSignatureForProxyMessage(
+      message,
+      this.gameState.signingAccount.privkey
+    );
+
+    return request;
+  }
+
+  /**
+   * Restore an expired guild API session in place. The wallet that signs a
+   * fresh login is already in memory, so a session that idles out does not need
+   * a page reload to recover.
+   *
+   * Deliberately narrow: it renews the session and nothing else. Registering
+   * listeners and priming game state belongs to {@link login}.
+   *
+   * @return {Promise<boolean>}
+   */
+  async reauthenticate() {
+    if (!this.gameState.signingAccount || !this.gameState.thisGuild) {
+      return false;
+    }
+
+    const response = await this.guildAPI.login(await this.buildLoginRequest());
+
+    if (!response.success) {
+      console.warn('[AuthManager] session re-authentication was rejected.');
+    }
+
+    return response.success;
+  }
+
+  /**
+   * @param {string} playerId
+   * @return {Promise<boolean>}
+   */
+  async login(playerId) {
+    const response = await this.guildAPI.login(await this.buildLoginRequest());
+
+    console.log('Login response status:', response);
+
+    if (response.success) {
+      this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setId(playerId); // Must be set before registering many GRASS listeners
+
+      this.grassManager.registerListener(new KeyPlayerLastActionListener(this.gameState, PLAYER_TYPES.PLAYER));
+      this.grassManager.registerListener(new PlayerAlphaListener(this.gameState));
+      this.grassManager.registerListener(new KeyPlayerOreListener(this.gameState, this.guildAPI, PLAYER_TYPES.PLAYER));
+      this.grassManager.registerListener(new KeyPlayerShieldChangeStatusListener(this.gameState, PLAYER_TYPES.PLAYER));
+      this.grassManager.registerListener(new PlayerLoadListener(this.gameState));
+      this.grassManager.registerListener(new PlayerStructsLoadListener(this.gameState));
+      this.grassManager.registerListener(new PlayerCapacityListener(this.gameState));
+      this.grassManager.registerListener(new ConnectionCapacityListener(this.gameState));
+      this.grassManager.registerListener(new PlayerAddressRevokedListener(
+        this.gameState,
+        this.guildAPI,
+        this.gameState.signingAccount.address
+      ));
+      this.grassManager.registerListener(new AlphaChangeListener(this.gameState, this.guildAPI));
+
+      // Task related listeners
+      this.grassManager.registerListener(new StructListener(
+        this.gameState,
+        this.guildAPI,
+        this.structManager,
+        PLAYER_TYPES.PLAYER
+      ));
+      this.grassManager.registerListener(new StructMineStatusListener(this.gameState));
+      this.grassManager.registerListener(new StructRefineStatusListener(this.gameState));
+
+      await this.signingClientManager.initSigningClient();
+      await this.playerAddressManager.addPlayerAddressMeta();
+
+      this.destroyedStructManager.init();
+
+      const [
+        player,
+        height,
+        structTypes,
+        fleet,
+        structs
+      ] = await Promise.all([
+        this.guildAPI.getPlayer(playerId),
+        this.guildAPI.getPlayerLastActionBlockHeight(playerId),
+        this.guildAPI.getStructTypes(),
+        this.guildAPI.getFleetByPlayerId(playerId),
+        this.guildAPI.getStructsByPlayerId(playerId)
+      ]);
+
+      this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setPlayer(player);
+      this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setLastActionBlockHeight(this.gameState.currentBlockHeight, height);
+      this.gameState.setStructTypes(structTypes);
+      this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setFleet(fleet);
+      this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setStructs(structs);
+
+      this.grassManager.registerListener(new PlanetRaidStatusListener(
+        this.gameState,
+        this.guildAPI,
+        this.raidManager,
+        this.mapManager
+      ));
+
+      if (this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].player.planet_id) {
+
+        const [
+          planet,
+          shieldInfo,
+          planetPlanetRaidInfo,
+          raidPlanetRaidInfo
+        ] = await Promise.all([
+          this.guildAPI.getPlanet(this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].player.planet_id),
+          this.guildAPI.getPlanetaryShieldInfo(this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].player.planet_id),
+          this.guildAPI.getActivePlanetRaidByPlanetId(this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].player.planet_id),
+          this.guildAPI.getActivePlanetRaidByFleetId(this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].player.fleet_id)
+        ]);
+
+        this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setPlanet(planet);
+        this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setPlanetShieldInfo(shieldInfo, this.gameState.currentBlockHeight);
+        this.gameState.setPlanetPlanetRaidInfo(planetPlanetRaidInfo);
+        this.gameState.setRaidPlanetRaidInfo(raidPlanetRaidInfo);
+
+        await Promise.all([
+          this.raidManager.initPlanetRaider(),
+          this.raidManager.initRaidEnemy(),
+        ]);
+
+        this.mapManager.configureAlphaBaseMap();
+        this.gameState.alphaBaseMap.render();
+
+        this.mapManager.configureRaidMap();
+        this.gameState.raidMap.render();
+
+        // The raid status was announced before the raid enemy finished loading,
+        // so anything that rendered then (e.g. the raid card) needs refreshing.
+        window.dispatchEvent(new PlanetRaidStatusChangedEvent(PLAYER_TYPES.RAID_ENEMY));
+
+        this.mapManager.showActiveMap();
+
+        // Do this last so block height is available
+        await this.taskManager.restoreTasksFromDB();
+
+        window.dispatchEvent(new LoginCompleteEvent());
+
+      // If the signup flow failed just before getting a planet, get a new planet for the user on login.
+      } else if (!this.gameState.signupRequest.signature) {
+        const newPlanetListener = new NewPlanetListener(
+          this.gameState,
+          this.guildAPI,
+          this.mapManager
+        );
+        newPlanetListener.redirectCallback = () => {
+          window.dispatchEvent(new LoginCompleteEvent());
+        };
+
+        this.grassManager.registerListener(newPlanetListener);
+
+        await this.planetManager.findNewPlanet();
+      }
+    }
+
+    return response.success;
+  }
+
+  /**
+   * @param {string} mnemonic
+   * @return {Promise<boolean>}
+   */
+  async loginWithMnemonic(mnemonic) {
+    try {
+      // Used to authorize the on-chain registration of the new device address
+      await this.initWallet(mnemonic);
+      const primaryAddress = this.gameState.signingAccount.address;
+
+      const playerId = await this.guildAPI.getPlayerIdByAddressAndGuild(
+        primaryAddress,
+        this.gameState.thisGuild.id
+      );
+
+      // Create a fresh device identity
+      const newMnemonic = this.walletManager.createMnemonic();
+      const newWallet = await this.walletManager.createWallet(newMnemonic);
+      const newAccounts = await newWallet.getAccountsWithPrivkeys();
+      const newAccount = newAccounts[0];
+      const newPubkey = this.walletManager.bytesToHex(newAccount.pubkey);
+
+      // Proof that the new device consents to being registered to the player.
+      const registerMessage = this.guildAPI.buildAddressRegisterMessage(
+        playerId,
+        newAccount.address
+      );
+      const proofSignature = await this.walletManager.createSignatureForProxyMessage(
+        registerMessage,
+        newAccount.privkey
+      );
+
+      this.grassManager.registerListener(new RecoverAccountAddressApprovedListener(
+        this.gameState,
+        this,
+        playerId,
+        newAccount.address,
+        newMnemonic
+      ));
+
+      // Register the new address on-chain. The active wallet is still the
+      // primary one initialised above, which already holds the permission to
+      // manage the player's devices; the new device wallet does not take over
+      // until completeMnemonicLogin().
+      await this.signingClientManager.initSigningClient();
+
+      const permissions = this.permissionManager.getDefaultPlayerPermissions()
+          | this.permissionManager.getManageDevicesPermissions();
+
+      const registerTx = await this.signingClientManager.queueMsgAddressRegister(
+        playerId,
+        newAccount.address,
+        newPubkey,
+        proofSignature,
+        permissions
+      );
+
+      return registerTx.status === TX_STATUS.SUCCEEDED;
+    } catch (error) {
+      console.log(error);
+      return false;
+    }
+  }
+
+  /**
+   * @param {string} playerId
+   * @param {string} mnemonic
+   * @return {Promise<boolean>}
+   */
+  async completeMnemonicLogin(playerId, mnemonic) {
+    this.gameState.mnemonic = mnemonic;
+    await this.initWallet(mnemonic);
+    return this.login(playerId);
+  }
+
+  /**
+   * @param {string|null} addressToRevoke
+   */
+  async revokeAddress(addressToRevoke) {
+    this.grassManager.registerListener(new PlayerAddressRevokedListener(
+      this.gameState,
+      this.guildAPI,
+      addressToRevoke
+    ));
+
+    await this.signingClientManager.queueMsgAddressRevoke(
+      addressToRevoke
+    );
+  }
+
+  logout() {
+    this.guildAPI.logout().then(() => {
+      localStorage.clear();
+      MenuPage.router.goto('Auth', 'index');
+      MenuPage.open();
+      window.location.reload();
+    });
+  }
+
+  /**
+   * @param {ActivationCodeInfoDTO} activationCodeInfo
+   * @return {Promise<boolean>}
+   */
+  async addNewDevice(activationCodeInfo) {
+    this.gameState.mnemonic = this.walletManager.createMnemonic();
+
+    await this.initWallet(this.gameState.mnemonic);
+
+    const message = this.guildAPI.buildAddressRegisterMessage(
+      activationCodeInfo.player_id,
+      this.gameState.signingAccount.address
+    );
+
+    const signature = await this.walletManager.createSignatureForProxyMessage(
+      message,
+      this.gameState.signingAccount.privkey
+    );
+
+    const request = new AddPendingAddressRequestDTO();
+    request.player_id = activationCodeInfo.player_id;
+    request.guild_id = this.gameState.thisGuild.id;
+    request.code = activationCodeInfo.code;
+    request.address = this.gameState.signingAccount.address;
+    request.signature = signature;
+    request.pubkey = this.gameState.pubkey;
+    request.user_agent = window.navigator.userAgent;
+
+    const playerAddressApprovedLoginListener = new PlayerAddressApprovedLoginListener(
+      this.gameState,
+      activationCodeInfo
+    );
+    this.grassManager.registerListener(playerAddressApprovedLoginListener);
+
+    const response = await this.guildAPI.addPendingAddress(request);
+
+    return response.success;
+  }
+
+  /**
+   * @param {CreateActivationCodeRequestDTO} request
+   * @return {Promise<string>}
+   */
+  async createActivationCode(request) {
+    const response = await this.guildAPI.createActivationCode(request);
+
+    let code = 'ERROR';
+
+    if (response.success) {
+      code = response.data.code;
+
+      this.grassManager.registerListener(new PlayerAddressPendingCreatedListener(
+        this.playerAddressPendingFactory,
+        code
+      ));
+    }
+
+    return code;
+  }
+
+  /**
+   * @param {PlayerAddressPending} playerAddressPending
+   * @return {Promise<boolean>}
+   */
+  async activateDevice(playerAddressPending) {
+    const setPermissionsRequest = new SetPendingAddressPermissionsRequestDTO();
+    setPermissionsRequest.code = playerAddressPending.code;
+    setPermissionsRequest.address = playerAddressPending.address;
+    setPermissionsRequest.permissions = playerAddressPending.permissions;
+
+    const response = await this.guildAPI.setPendingAddressPermissions(setPermissionsRequest);
+
+    if (!response.success) {
+      return false;
+    }
+
+    const playerAddressApprovedListener = new PlayerAddressApprovedListener(
+      this.gameState,
+      this.guildAPI,
+      playerAddressPending
+    );
+    this.grassManager.registerListener(playerAddressApprovedListener);
+
+    await this.signingClientManager.queueMsgAddressRegister(
+      this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].id,
+      playerAddressPending.address,
+      playerAddressPending.pubkey,
+      playerAddressPending.signature,
+      playerAddressPending.permissions
+    );
+
+    await this.guildAPI.deleteActivationCode(playerAddressPending.code);
+
+    return true;
+  }
+
+}

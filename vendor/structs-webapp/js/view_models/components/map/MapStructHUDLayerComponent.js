@@ -1,0 +1,578 @@
+import {GenericMapLayerComponent} from "./GenericMapLayerComponent";
+import {Struct} from "../../../models/Struct";
+import {StructType} from "../../../models/StructType";
+import {EVENTS} from "../../../constants/Events";
+import {HUDViewModel} from "../../HUDViewModel";
+import {OBJECT_TYPES} from "../../../constants/ObjectTypes";
+import {PLAYER_TYPES} from "../../../constants/PlayerTypes";
+import {STRUCT_TYPES} from "../../../constants/StructConstants";
+import {TASK_TYPES} from "../../../constants/TaskTypes";
+import {Player} from "../../../models/Player";
+
+
+export class MapStructHUDLayerComponent extends GenericMapLayerComponent {
+
+  /**
+   * @param {GameState} gameState
+   * @param {StructManager} structManager
+   * @param {TaskManager} taskManager
+   * @param {string[]} mapColBreakdown
+   * @param {Planet|null} planet
+   * @param {Player|null} defender
+   * @param {Player|null} attacker
+   * @param {Fleet|null} defenderFleet
+   * @param {Fleet|null} attackerFleet
+   * @param {string} containerId - The ID of the DOM container element for this HUD layer
+   * @param {string} mapId
+   */
+  constructor(
+    gameState,
+    structManager,
+    taskManager,
+    mapColBreakdown,
+    planet,
+    defender,
+    attacker,
+    defenderFleet,
+    attackerFleet,
+    containerId = "",
+    mapId = ""
+  ) {
+    super(
+      gameState,
+      'map-struct-hud-layer-row',
+      'map-struct-hud-layer-tile',
+      structManager,
+      mapColBreakdown,
+      planet,
+      defender,
+      attacker,
+      defenderFleet,
+      attackerFleet,
+      containerId,
+      mapId
+    );
+
+    /** @type {TaskManager} */
+    this.taskManager = taskManager;
+
+    /** @type {Array<{event: string, handler: EventListener}>} */
+    this.windowEventHandlers = [];
+
+    // Buffer of RENDER_STRUCT_HUD requests that arrived while the animation
+    // queue was playing. Keyed by structId so that repeated requests collapse
+    // to the latest struct snapshot. Flushed when ANIMATION_QUEUE_EMPTY fires.
+    /** @type {Map<string, Struct>} */
+    this.deferredHudRenders = new Map();
+  }
+
+  /**
+   * Register a window event listener and remember it so it can be removed in destroy().
+   *
+   * @param {string} event
+   * @param {EventListener} handler
+   */
+  addWindowEventListener(event, handler) {
+    window.addEventListener(event, handler);
+    this.windowEventHandlers.push({event, handler});
+  }
+
+  /**
+   * Remove all window event listeners registered by this component.
+   */
+  destroy() {
+    for (let i = 0; i < this.windowEventHandlers.length; i++) {
+      const {event, handler} = this.windowEventHandlers[i];
+      window.removeEventListener(event, handler);
+    }
+    this.windowEventHandlers = [];
+    this.deferredHudRenders.clear();
+  }
+
+  /**
+   * @param {Struct} struct
+   * @param {number|null} healthOverride if non-null, render the bar at this health
+   * value instead of struct.health (used to show partial state mid-attack-sequence)
+   * @return {string}
+   */
+  renderHealthBar(struct, healthOverride = null) {
+    if (!struct.isBuilt()) {
+      return '';
+    }
+
+    const structType = this.gameState.structTypes.getStructTypeById(struct.type);
+    const segments = [];
+    const health = (healthOverride !== null && healthOverride !== undefined)
+      ? healthOverride
+      : struct.health;
+
+    for (let i = 0; i < structType.max_health; i++) {
+      segments.push(`<div class="struct-health-bar-segment ${(i < health) ? 'mod-filled' : ''}"></div>`);
+    }
+
+    return `
+      <div class="struct-health-bar">
+        ${segments.join('')}
+      </div>
+    `;
+  }
+
+  /**
+   * Determines which task type's progress bar (if any) should be shown for the
+   * given struct in the HUD layer. Returns null when no progress bar applies.
+   *
+   * Task progress is calculated locally on each player's machine against their
+   * own task state, so the bar would never advance for structs owned by other
+   * players. Restrict progress bars to structs owned by the current player.
+   *
+   * @param {Struct} struct
+   * @param {StructType} structType
+   * @return {string|null} a value from TASK_TYPES or null
+   */
+  getProgressBarTaskType(struct, structType) {
+    if (!struct || struct.isDestroyed()) {
+      return null;
+    }
+    const currentPlayerId = this.gameState.keyPlayers
+      && this.gameState.keyPlayers[PLAYER_TYPES.PLAYER]
+      ? this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].id
+      : null;
+    if (!currentPlayerId || struct.owner !== currentPlayerId) {
+      return null;
+    }
+    if (!struct.isBuilt()) {
+      return TASK_TYPES.BUILD;
+    }
+    if (!struct.isOnline()) {
+      return null;
+    }
+    if (structType && structType.type === STRUCT_TYPES.ORE_EXTRACTOR) {
+      return TASK_TYPES.MINE;
+    }
+    if (structType && structType.type === STRUCT_TYPES.ORE_REFINERY) {
+      return TASK_TYPES.REFINE;
+    }
+    return null;
+  }
+
+  /**
+   * Clamp a fractional percent (0.0 - 1.0) and return it as a CSS percentage.
+   *
+   * @param {number} percent
+   * @return {string}
+   */
+  formatProgressPercent(percent) {
+    const clamped = Math.max(0, Math.min(1, percent || 0));
+    return `${clamped * 100}%`;
+  }
+
+  /**
+   * Render the struct progress bar HTML if applicable for the given struct.
+   *
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderProgressBar(struct) {
+    const structType = this.gameState.structTypes
+      ? this.gameState.structTypes.getStructTypeById(struct.type)
+      : null;
+    const taskType = this.getProgressBarTaskType(struct, structType);
+    if (!taskType) {
+      return '';
+    }
+
+    let percent = 0;
+    if (this.taskManager) {
+      const process = this.taskManager.getProcessByStructIdAndType(struct.id, taskType);
+      if (process) {
+        percent = this.taskManager.getProcessPercentCompleteEstimate(process.state.getPID());
+      }
+    }
+
+    return `
+      <div class="struct-progress-bar" data-task-type="${taskType}">
+        <div class="struct-progress-bar-fill" style="width: ${this.formatProgressPercent(percent)}"></div>
+      </div>
+    `;
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderIndicatorIsDefended(struct) {
+    return !struct.isDestroyed() && struct.isDefended()
+      ? `<i class="sui-icon sui-icon-sm sui-icon-defended"></i>`
+      : '';
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderIndicatorIsDefending(struct) {
+    return !struct.isDestroyed() && struct.isDefending()
+      ? `<i class="sui-icon sui-icon-sm sui-icon-defending"></i>`
+      : '';
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderIndicatorIsDestroyed(struct) {
+    return struct.isDestroyed()
+      ? `<i class="sui-icon sui-icon-sm sui-icon-destroyed"></i>`
+      : '';
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderIndicatorIsOffline(struct) {
+    return !struct.isDestroyed() && struct.isBuilt() && !struct.isOnline()
+      ? `<i class="sui-icon sui-icon-sm sui-icon-energy-deactivated"></i>`
+      : '';
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {Player|null} null when the owner is not on this map
+   */
+  getStructOwner(struct) {
+    for (const keyPlayer of Object.values(this.gameState.keyPlayers)) {
+      if (keyPlayer.player && keyPlayer.player.id === struct.owner) {
+        return keyPlayer.player;
+      }
+    }
+
+    if (this.attacker && struct.owner === this.attacker.id) {
+      return this.attacker;
+    }
+
+    return (this.defender && struct.owner === this.defender.id) ? this.defender : null;
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderIndicatorIsOverloaded(struct) {
+    const player = this.getStructOwner(struct);
+    return (player && !struct.isDestroyed() && struct.isBuilt() && struct.isOnline() && player.isOverloaded())
+      ? `<i class="sui-icon sui-icon-sm sui-icon-no-power"></i>`
+      : '';
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderIndicatorIsRaided(struct) {
+    return this.structManager.isOreWorkHaltedByRaid(struct)
+      ? `<i class="sui-icon sui-icon-sm sui-icon-attention"></i>`
+      : '';
+  }
+
+  /**
+   * Get the currently selected struct for this map.
+   *
+   * @return {Struct|null}
+   */
+  getSelectedStruct() {
+    const selectedTile = HUDViewModel.currentSelectedTile;
+    const struct = selectedTile
+      ? this.structManager.getStructById(selectedTile.structId)
+      : null;
+
+    // Check that the struct is from this map
+    if (!struct || !this.buildMapStructTilRenderParamsFromStruct(struct)) {
+      return null;
+    }
+
+    return struct;
+  }
+
+  /**
+   * @param {Struct} struct
+   * @param {Struct|null} selectedStruct
+   * @return {{isDestroyed: boolean, isOffline: boolean, isOverloaded: boolean, isRaided: boolean, isDefended: boolean, isDefending: boolean}}
+   */
+  getVisibleStatusIndicators(struct, selectedStruct) {
+    if (!selectedStruct || struct.id === selectedStruct.id) {
+      return {isDestroyed: true, isOffline: true, isOverloaded: true, isRaided: true, isDefended: true, isDefending: true};
+    }
+
+    const defendingStructIds = selectedStruct.defending_struct_ids || [];
+
+    return {
+      isDestroyed: false,
+      isOffline: false,
+      isOverloaded: false,
+      isRaided: false,
+      isDefended: struct.id === selectedStruct.protected_struct_id,
+      isDefending: defendingStructIds.includes(struct.id)
+    };
+  }
+
+  /**
+   * @param {Struct} struct
+   * @param {Struct|null} selectedStruct
+   * @return {string}
+   */
+  renderStatusIndicatorIcons(struct, selectedStruct) {
+    const visible = this.getVisibleStatusIndicators(struct, selectedStruct);
+
+    return `
+      ${visible.isDestroyed ? this.renderIndicatorIsDestroyed(struct) : ''}
+      ${visible.isOffline ? this.renderIndicatorIsOffline(struct) : ''}
+      ${visible.isOverloaded ? this.renderIndicatorIsOverloaded(struct) : ''}
+      ${visible.isRaided ? this.renderIndicatorIsRaided(struct) : ''}
+      ${visible.isDefended ? this.renderIndicatorIsDefended(struct) : ''}
+      ${visible.isDefending ? this.renderIndicatorIsDefending(struct) : ''}
+    `;
+  }
+
+  /**
+   * @param {Struct} struct
+   * @return {string}
+   */
+  renderStatusIndicators(struct) {
+    return `
+      <div class="map-struct-hud-status-indicators">
+        ${this.renderStatusIndicatorIcons(struct, this.getSelectedStruct())}
+      </div>
+    `;
+  }
+
+  /**
+   * Re-render the status indicators for every struct on this map.
+   */
+  refreshAllStatusIndicators() {
+    const container = document.getElementById(this.containerId);
+    if (!container) {
+      return;
+    }
+
+    const selectedStruct = this.getSelectedStruct();
+
+    container.querySelectorAll(`.${this.tileClass}`).forEach(tile => {
+      const indicators = tile.querySelector('.map-struct-hud-status-indicators');
+      const struct = this.structManager.getStructById(tile.getAttribute('data-struct-id'));
+
+      if (indicators && struct) {
+        indicators.innerHTML = this.renderStatusIndicatorIcons(struct, selectedStruct);
+      }
+    });
+  }
+
+  /**
+   * Render the content for a single HUD tile
+   * @param {HTMLElement} tileElement
+   * @param {Struct|null} struct
+   * @param {number|null} healthOverride if non-null, render the health bar at this
+   * value instead of struct.health (used to show partial state mid-attack-sequence)
+   */
+  renderStructHUD(tileElement, struct = null, healthOverride = null) {
+    const shouldRender = struct && (!struct.isDestroyed() || struct.isBuilt());
+
+    if (!shouldRender) {
+      tileElement.innerHTML = '';
+      tileElement.setAttribute('data-struct-id', '');
+      return;
+    }
+
+    const healthBarHTML = this.renderHealthBar(struct, healthOverride);
+    const progressBarHTML = this.renderProgressBar(struct);
+    const statusBarsHTML = (healthBarHTML || progressBarHTML)
+      ? `<div class="map-struct-hud-status-bars">${healthBarHTML}${progressBarHTML}</div>`
+      : '';
+
+    tileElement.innerHTML = `
+      ${statusBarsHTML}
+      ${this.renderStatusIndicators(struct)}
+    `;
+    tileElement.setAttribute('data-struct-id', struct.id);
+  }
+
+  /**
+   * @param {HTMLElement} tileElement
+   */
+  renderStructHUDFromTileElement(tileElement) {
+    const renderParams = this.buildMapStructTilRenderParamsFromTileElement(tileElement);
+    if (renderParams) {
+      this.renderStructHUD(renderParams.tileElement, renderParams.struct);
+    }
+  }
+
+  /**
+   * @param {Struct} struct
+   * @param {number|null} healthOverride if non-null, render the health bar at this
+   * value instead of struct.health
+   */
+  renderStructHUDFromStruct(struct, healthOverride = null) {
+    const renderParams = this.buildMapStructTilRenderParamsFromStruct(struct);
+    if (renderParams) {
+      this.renderStructHUD(renderParams.tileElement, renderParams.struct, healthOverride);
+    }
+  }
+
+  renderAllStructHUDs() {
+    const tiles = document.getElementById(this.containerId).querySelectorAll(`.${this.tileClass}`);
+    tiles.forEach(tile => {
+      this.renderStructHUDFromTileElement(tile);
+    });
+  }
+
+  /**
+   * Update only the width of an already rendered progress bar fill for the
+   * given struct, without re-rendering the entire HUD tile. If the tile
+   * currently has no progress bar of the supplied taskType (e.g. the struct
+   * just transitioned from BUILD to MINE), fall back to a full HUD render
+   * so the correct bar appears.
+   *
+   * @param {string} structId
+   * @param {string} taskType see TASK_TYPES
+   * @param {number} percent fractional (0.0 - 1.0)
+   */
+  updateProgressBarFill(structId, taskType, percent) {
+    const tile = document.querySelector(
+      `#${this.mapId} .${this.tileClass}[data-struct-id="${structId}"]`
+    );
+    if (!tile) {
+      return;
+    }
+    const progressBar = tile.querySelector(`.struct-progress-bar[data-task-type="${taskType}"]`);
+    if (!progressBar) {
+      const struct = this.structManager.getStructById(structId);
+      if (struct) {
+        this.renderStructHUD(tile, struct);
+      }
+      return;
+    }
+    const fill = progressBar.querySelector('.struct-progress-bar-fill');
+    if (fill) {
+      fill.style.width = this.formatProgressPercent(percent);
+    }
+  }
+
+  /**
+   * Initialize page code: set up event listeners for future expansion
+   */
+  initPageCode() {
+    this.renderAllStructHUDs();
+
+    this.addWindowEventListener(EVENTS.TASK_STATE_CHANGED, (event) => {
+      if (
+        !event.state
+        || event.state.object_type !== OBJECT_TYPES.STRUCT
+      ) {
+        return;
+      }
+
+      const structId = event.state.object_id;
+      const struct = this.structManager.getStructById(structId);
+      if (!struct) {
+        return;
+      }
+
+      const structType = this.gameState.structTypes
+        ? this.gameState.structTypes.getStructTypeById(struct.type)
+        : null;
+      const expectedTaskType = this.getProgressBarTaskType(struct, structType);
+      if (!expectedTaskType) {
+        return;
+      }
+
+      // Use the manager's estimator (factors hashrate + block offset) so the
+      // live update matches the value used by renderProgressBar on the
+      // initial draw and avoids a visible jump on the first tick.
+      this.updateProgressBarFill(
+        structId,
+        expectedTaskType,
+        this.taskManager.getProcessPercentCompleteEstimate(event.state.getPID())
+      );
+    });
+
+    this.addWindowEventListener(EVENTS.RENDER_STRUCT_HUD, (event) => {
+      if (event.mapId !== this.mapId) {
+        return;
+      }
+      // While the animation queue is playing, defer applying gameState-based
+      // HUD renders. Animation lifecycles drive partial-state HUD content via
+      // ANIMATION_END's healthAfter, and applying gameState mid-sequence would
+      // clobber that partial state with the (already-final) post-attack value.
+      // The deferred render is flushed once the queue goes idle.
+      if (this.gameState.animationEventQueue && this.gameState.animationEventQueue.isPlaying) {
+        this.deferredHudRenders.set(event.struct.id, event.struct);
+        return;
+      }
+      this.renderStructHUDFromStruct(event.struct);
+    });
+
+    this.addWindowEventListener(EVENTS.ANIMATION_QUEUE_EMPTY, () => {
+      if (this.deferredHudRenders.size === 0) {
+        return;
+      }
+      for (const struct of this.deferredHudRenders.values()) {
+        this.renderStructHUDFromStruct(struct);
+      }
+      this.deferredHudRenders.clear();
+    });
+
+    this.addWindowEventListener(EVENTS.STRUCT_SELECTION_CHANGED, () => {
+      this.refreshAllStatusIndicators();
+    });
+
+    // A change in energy supply can disable or re-enable every one of a
+    // player's structs at once, so refresh the whole map rather than waiting
+    // for each struct to be re-rendered individually.
+    this.addWindowEventListener(EVENTS.ENERGY_USAGE_CHANGED, () => {
+      this.refreshAllStatusIndicators();
+    });
+
+    this.addWindowEventListener(EVENTS.PLANET_RAID_STATUS_CHANGED, () => {
+      this.refreshAllStatusIndicators();
+    });
+
+    this.addWindowEventListener(EVENTS.CLEAR_STRUCT_TILE, (event) => {
+      if (event.mapId === this.mapId) {
+        this.clearTile(event.tileType, event.ambit, event.slot, event.playerId);
+      }
+    });
+
+    // Hide the HUD while animations are playing for the tile and show HUD after they're finished
+    this.addWindowEventListener(EVENTS.ANIMATION, (event) => {
+      if (event.mapId && event.mapId !== this.mapId) {
+        return;
+      }
+      const tile = document.querySelector(`#${this.mapId} .map-struct-hud-layer-tile[data-struct-id="${event.structId}"]`);
+      if (tile) {
+        tile.classList.add('invisible');
+      }
+    });
+    this.addWindowEventListener(EVENTS.ANIMATION_END, (event) => {
+      if (event.mapId && event.mapId !== this.mapId) {
+        return;
+      }
+      const tile = document.querySelector(`#${this.mapId} .map-struct-hud-layer-tile[data-struct-id="${event.structId}"]`);
+      if (!tile) {
+        return;
+      }
+
+      // When the animation carries a partial health value (e.g. from a multi-source
+      // attack sequence), re-render the HUD content at that health before revealing
+      // it. Without this, gameState already holds the final post-attack health, so
+      // the HUD would jump to the final state after the first counter animation.
+      if (event.healthAfter !== null && event.healthAfter !== undefined) {
+        const struct = this.structManager.getStructById(event.structId);
+        if (struct) {
+          this.renderStructHUD(tile, struct, event.healthAfter);
+        }
+      }
+
+      tile.classList.remove('invisible');
+    });
+  }
+}

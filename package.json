@@ -1,0 +1,37 @@
+{
+  "name": "a-la-structs",
+  "private": true,
+  "version": "0.1.0",
+  "description": "À la Structs \u2014 a cozy critter-restaurant skin for Structs. Same chain, same rules, completely different kitchen.",
+  "type": "module",
+  "scripts": {
+    "sync-vendor": "node scripts/sync-vendor.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:preview-page": "ESBUILD=esbuild node scripts/build-artifact.mjs",
+    "hangout": "node server/hangout.mjs",
+    "demo-smoke": "node scripts/demo-smoke.mjs"
+  },
+  "dependencies": {
+    "three": "0.169.0",
+    "@bufbuild/protobuf": "^2.2.0",
+    "@cosmjs/crypto": "^0.34.0",
+    "@cosmjs/encoding": "^0.32.3",
+    "@cosmjs/proto-signing": "^0.34.0",
+    "@cosmjs/stargate": "^0.34.0",
+    "@cosmjs/tendermint-rpc": "^0.34.0",
+    "@nats-io/nats-core": "^3.0.0",
+    "bip39": "^3.0.3",
+    "buffer": "^5.7.1",
+    "crypto-js": "^4.0.0",
+    "js-sha256": "^0.11.1",
+    "sha.js": "^2.4.11",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "vite": "^5.4.0"
+  },
+  "license": "Apache-2.0"
+}

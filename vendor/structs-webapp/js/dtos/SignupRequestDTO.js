@@ -1,0 +1,11 @@
+export class SignupRequestDTO {
+  constructor() {
+      this.primary_address = null;
+      this.signature = null;
+      this.pubkey = null;
+      this.guild_id = null;
+      this.username = null;
+      this.pfp = null;
+      this.pfp_client_render_attributes = null;
+  }
+}

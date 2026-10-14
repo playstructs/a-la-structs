@@ -1,0 +1,85 @@
+export const
+  MAP_COL_DEFENDER_COMMAND = 'DEFENDER_COMMAND',
+  MAP_COL_DEFENDER_PLANETARY = 'DEFENDER_PLANETARY',
+  MAP_COL_DEFENDER_FLEET = 'DEFENDER_FLEET',
+  MAP_COL_DIVIDER = 'DIVIDER',
+  MAP_COL_ATTACKER_FLEET = 'ATTACKER_FLEET',
+  MAP_COL_ATTACKER_COMMAND = 'ATTACKER_COMMAND',
+
+  MAP_DEFAULT_COMMAND_COL_COUNT = 1,
+  MAP_DEFAULT_PLANETARY_COL_COUNT = 2,
+  MAP_DEFAULT_FLEET_COL_COUNT = 2,
+  MAP_DEFAULT_DIVIDER_COL_COUNT = 1,
+
+  MAP_TILE_ROWS_PER_AMBIT = 2,
+
+  MAP_COL_ORDER = [
+    MAP_COL_DEFENDER_COMMAND,
+    MAP_COL_DEFENDER_PLANETARY,
+    MAP_COL_DEFENDER_FLEET,
+    MAP_COL_DIVIDER,
+    MAP_COL_ATTACKER_FLEET,
+    MAP_COL_ATTACKER_COMMAND
+  ],
+
+  MAP_COL_COUNT_PROPS = {
+    DEFENDER_COMMAND: 'defenderCommandColCount',
+    DEFENDER_PLANETARY: 'defenderPlanetaryColCount',
+    DEFENDER_FLEET: 'defenderFleetColCount',
+    DIVIDER: 'dividerColCount',
+    ATTACKER_FLEET: 'attackerFleetColCount',
+    ATTACKER_COMMAND: 'attackerCommandColCount'
+  },
+
+  MAP_TILE_SIZE = 128,
+
+  MAP_TRANSITION_HEIGHT = 128,
+
+  MAP_NAMED_TRANSITIONS = {
+    HORIZON: 'HORIZON'
+  },
+
+  MAP_TRANSITION_TILE_LABELS = {
+    ATMOSPHERE: 'ATMOSPHERE',
+    HORIZON: 'HORIZON',
+    SHORE: 'SHORE'
+  },
+
+  MAP_TILE_TYPES = {
+    FOG_OF_WAR: 'FOG_OF_WAR',
+    TRANSITION: 'TRANSITION',
+    COMMAND: 'COMMAND',
+    COMMAND_BLOCKED: 'COMMAND_BLOCKED',
+    PLANETARY_SLOT: 'PLANETARY_SLOT',
+    PLANETARY_BLOCKED: 'PLANETARY_BLOCKED',
+    FLEET: 'FLEET',
+    DIVIDER: 'DIVIDER',
+  },
+
+  MAP_TILE_TYPE_ICONS = {
+    FOG_OF_WAR: 'icon-unknown-territory',
+    TRANSITION: 'icon-blocked',
+    COMMAND: 'icon-cmd-post',
+    COMMAND_BLOCKED: 'icon-blocked',
+    PLANETARY_SLOT: 'icon-beacon',
+    PLANETARY_BLOCKED: 'icon-blocked',
+    FLEET: 'icon-fleet-tile',
+    DIVIDER: 'icon-blocked',
+    ENEMY_TERRITORY: 'icon-enemy-tile',
+  },
+
+  MAP_ORNAMENTS = {
+    SPACE_MONSTER: 'SPACE_MONSTER'
+  },
+
+  MAP_CONTAINER_IDS = {
+    ALPHA_BASE: 'alpha-base-map-container',
+    RAID: 'raid-map-container',
+    PREVIEW: 'preview-map-container'
+  },
+
+  MAP_TYPES = {
+    ALPHA_BASE: 'alphaBaseMap',
+    RAID: 'raidMap'
+  }
+;

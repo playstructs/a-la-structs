@@ -1,0 +1,157 @@
+import {AbstractGrassListener} from "../framework/AbstractGrassListener";
+import {RAID_STATUS} from "../constants/RaidStatus";
+import {RaidStatusUtil} from "../util/RaidStatusUtil";
+import {PLAYER_TYPES} from "../constants/PlayerTypes";
+import {NOTIFICATION_DIALOGUE_SEQUENCES} from "../constants/NotificationDialogueSequences";
+import {NotificationDialogueSequenceFactory} from "../factories/NotificationDialogueSequenceFactory";
+import {MAP_CONTAINER_IDS} from "../constants/MapConstants";
+import {MenuPage} from "../framework/MenuPage";
+import {TaskCmdReconcileEvent} from "../events/TaskCmdReconcileEvent";
+import {TaskCmdRefreshOreEvent} from "../events/TaskCmdRefreshOreEvent";
+import {ORE_TASK_TYPES} from "../constants/TaskTypes";
+
+export class PlanetRaidStatusListener extends AbstractGrassListener {
+  /**
+   * @param {GameState} gameState
+   * @param {GuildAPI} guildAPI
+   * @param {RaidManager} raidManager
+   * @param {MapManager} mapManager
+   */
+  constructor(
+    gameState,
+    guildAPI,
+    raidManager,
+    mapManager
+  ) {
+    super('PLANET_RAID_STATUS');
+    this.gameState = gameState;
+    this.guildAPI = gameState.guildAPI;
+    this.raidManager = raidManager;
+    this.mapManager = mapManager;
+    this.raidStatusUtil = new RaidStatusUtil();
+    this.notificationDialogueSequenceFactory = new NotificationDialogueSequenceFactory();
+  }
+
+  /**
+   * The chain refuses mining and refining for as long as a raider is on the
+   * planet, so anything hashed in that window is unredeemable. The ore clocks
+   * are shifted forward by the length of the raid once it ends, and the fresh
+   * clocks are what start the work up again.
+   */
+  stopOreWork() {
+    for (const taskType of ORE_TASK_TYPES) {
+      window.dispatchEvent(new TaskCmdRefreshOreEvent(taskType, 0));
+    }
+  }
+
+  raidInitiated(messageData) {
+    if (messageData.detail.status !== RAID_STATUS.INITIATED) {
+      return;
+    }
+
+    console.log('PLANET RAID INITIATED HANDLER');
+
+    this.stopOreWork();
+
+    this.guildAPI.getActivePlanetRaidByPlanetId(this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].getPlanetId()).then(raidInfo => {
+      this.gameState.setPlanetPlanetRaidInfo(raidInfo, false);
+
+      return this.raidManager.initPlanetRaider().then(() => {
+        console.log('PLANET RAID ENEMY INITIATED DONE');
+
+        this.mapManager.configureAlphaBaseMap()
+        this.gameState.alphaBaseMap.render();
+
+        if (this.gameState.activeMapContainerId === MAP_CONTAINER_IDS.ALPHA_BASE) {
+          this.mapManager.showHUDForMap(MAP_CONTAINER_IDS.ALPHA_BASE);
+        }
+      });
+    }).catch(error => {
+      console.error('[PlanetRaidStatusListener] could not render the incoming raid:', error);
+    });
+  }
+
+  raidOngoing(messageData) {
+    if (messageData.detail.status !== RAID_STATUS.ONGOING) {
+      return;
+    }
+
+    console.log('PLANET RAID ONGOING HANDLER');
+
+    this.stopOreWork();
+
+    this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setPlanetRaidStatus(messageData.detail.status);
+  }
+
+  raidShieldVulnerable(messageData) {
+    if (messageData.detail.status !== RAID_STATUS.SHIELDS_VULNERABLE) {
+      return;
+    }
+
+    console.log('PLANET RAID SHIELD VULNERABLE HANDLER');
+
+    this.stopOreWork();
+
+    this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].setPlanetRaidStatus(messageData.detail.status);
+  }
+
+  raidEndActions() {
+    this.gameState.clearPlanetRaidData();
+
+    // Ore changed hands, so pick up whatever work the player is left with.
+    window.dispatchEvent(new TaskCmdReconcileEvent());
+
+    this.mapManager.configureAlphaBaseMap()
+    this.gameState.alphaBaseMap.render();
+
+    this.gameState.setActiveMapContainerId(MAP_CONTAINER_IDS.ALPHA_BASE);
+    this.mapManager.showMap(MAP_CONTAINER_IDS.ALPHA_BASE);
+    MenuPage.router.goto('Fleet', 'index');
+    MenuPage.open();
+  }
+
+  raidEnded(messageData) {
+    if (!this.raidStatusUtil.hasRaidEnded(messageData.detail.status)) {
+      return;
+    }
+
+    console.log('PLANET RAID HAS ENDED HANDLER');
+
+    const seizedOre = messageData.detail.seized_ore
+      ? messageData.detail.seized_ore
+      : 0;
+
+    let dialogue = null;
+    if (this.raidStatusUtil.isRaidSuccessful(messageData.detail.status)) {
+      dialogue = this.notificationDialogueSequenceFactory.make(
+        NOTIFICATION_DIALOGUE_SEQUENCES.DEFEATED_BY_ATTACKER,
+        {alphaOreLost: seizedOre}
+      );
+    } else if (this.raidStatusUtil.isAttackerDefeated(messageData.detail.status)) {
+      dialogue = this.notificationDialogueSequenceFactory.make(NOTIFICATION_DIALOGUE_SEQUENCES.DEFENDER_VICTORY);
+    }
+
+    if (dialogue) {
+      dialogue.actionOnSequenceEnd = () => {
+        this.raidEndActions();
+      }
+      dialogue.start();
+    } else {
+      this.raidEndActions();
+    }
+  }
+
+  handler(messageData) {
+    if (
+      messageData.category === 'raid_status'
+      && messageData.subject === `structs.planet.${this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].getPlanetId()}.${this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].id}`
+    ) {
+      console.log('PLANET RAID STATUS LISTENER', messageData);
+
+      this.raidInitiated(messageData);
+      this.raidOngoing(messageData);
+      this.raidShieldVulnerable(messageData);
+      this.raidEnded(messageData);
+    }
+  }
+}

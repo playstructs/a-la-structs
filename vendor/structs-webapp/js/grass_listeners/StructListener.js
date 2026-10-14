@@ -1,0 +1,830 @@
+import {AbstractGrassListener} from "../framework/AbstractGrassListener";
+import {TaskStateFactory} from "../factories/TaskStateFactory";
+import {TASK_TYPES} from "../constants/TaskTypes";
+import {TaskCmdKillEvent} from "../events/TaskCmdKillEvent";
+import {TaskCmdSpawnEvent} from "../events/TaskCmdSpawnEvent";
+import {
+  STRUCT_ACTIONS,
+  STRUCT_PLANETARY_DEFENSES,
+  STRUCT_STATUS_FLAGS,
+  STRUCT_TYPES,
+  STRUCT_WEAPON_SYSTEM
+} from "../constants/StructConstants";
+import {PLAYER_TYPES} from "../constants/PlayerTypes";
+import {ClearStructTileEvent} from "../events/ClearStructTileEvent";
+import {UpdateTileStructIdEvent} from "../events/UpdateTileStructIdEvent";
+import {AnimationEventFactory} from "../factories/AnimationEventFactory";
+import {AnimationEvent} from "../events/AnimationEvent";
+import {ANIMATION} from "../constants/AnimationConstants";
+import {RefreshAttackTargetsEvent} from "../events/RefreshAttackTargetsEvent";
+import {ClearAttackTargetsEvent} from "../events/ClearAttackTargetsEvent";
+import {ClearMoveTargetsEvent} from "../events/ClearMoveTargetsEvent";
+import {ClearDefendTargetsEvent} from "../events/ClearDefendTargetsEvent";
+import {StructCountChangedEvent} from "../events/StructCountChangedEvent";
+import {TaskCmdReconcileEvent} from "../events/TaskCmdReconcileEvent";
+import {Struct} from "../models/Struct";
+
+export class StructListener extends AbstractGrassListener {
+
+  /**
+   * @param {GameState} gameState
+   * @param {GuildAPI} guildAPI
+   * @param {StructManager} structManager
+   * @param {string} targetPlayerType - The player type whose planet this listener monitors
+   */
+  constructor(
+    gameState,
+    guildAPI,
+    structManager,
+    targetPlayerType = PLAYER_TYPES.PLAYER
+  ) {
+    super(`STRUCT_CHANGE_${targetPlayerType}`);
+    this.gameState = gameState;
+    this.guildAPI = guildAPI;
+    this.structManager = structManager;
+    this.targetPlayerType = targetPlayerType;
+    this.animationEventFactory = new AnimationEventFactory();
+  }
+
+  /**
+   * Get the player type for a given owner ID.
+   * @param {string} ownerId
+   * @returns {string|null}
+   */
+  getOwnerPlayerType(ownerId) {
+    for (const playerType of Object.values(PLAYER_TYPES)) {
+      if (this.gameState.keyPlayers[playerType].id === ownerId) {
+        return playerType;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Determines if this listener should be unregistered.
+   * For RAID_ENEMY listeners, unregister when the raid is no longer active.
+   * @returns {boolean}
+   */
+  shouldUnregister() {
+    if (this.gameState.keyPlayers[this.targetPlayerType].isRaidDependent()) {
+      return !this.gameState.getPlanetRaidInfoForKeyPlayer(this.targetPlayerType)?.isRaidActive();
+    }
+    return false;
+  }
+
+  /**
+   * @param {string} subject
+   * @param {object} messageData
+   */
+  handleStructBlockBuildStart(subject, messageData) {
+    if (!(
+      messageData.category === 'struct_block_build_start'
+      && messageData.subject === subject
+      && messageData.detail.block > 0
+    )) {
+      return;
+    }
+
+    // Skip the struct viewer re-render here: this handler only needs the
+    // refreshed struct snapshot to spawn the build progress task. The
+    // deployment indicator was already rendered client-side by
+    // DeployOffcanvas (own structs) or by the initial map sync, and the
+    // BUILT struct_status transition handled in handleStructStatus is what
+    // swaps the indicator out for the built viewer plus deployment animation.
+    // Letting refreshStruct re-render here lets the last block_build_start's
+    // RenderStructEvent race the BUILT transition's deployment animation -
+    // if the block event's API response lands while the animation is in
+    // flight, the struct viewer is torn down and the animation either never
+    // completes or completes against an orphaned wrapper, stalling the
+    // animation queue. RenderStructHUDEvent is still dispatched
+    // unconditionally inside refreshStruct so the build progress bar updates.
+    this.structManager.refreshStruct(
+      messageData.detail.struct_id,
+      this.gameState.keyPlayers[this.targetPlayerType].planetMapType,
+      false,
+      false
+    ).then((struct) => {
+
+      if (struct && this.getOwnerPlayerType(struct.owner) === PLAYER_TYPES.PLAYER) {
+        window.dispatchEvent(new TaskCmdSpawnEvent(new TaskStateFactory().initStructTask(
+          messageData.detail.struct_id,
+          TASK_TYPES.BUILD,
+          messageData.detail.block,
+          this.gameState.structTypes.getStructTypeById(struct.type).build_difficulty
+        )));
+      }
+
+    });
+  }
+
+  /**
+   * @param {string} subject
+   * @param {object} messageData
+   */
+  handleStructStatus(subject, messageData) {
+    if (!(
+      messageData.category === 'struct_status'
+      && messageData.subject === subject
+    )) {
+      return;
+    }
+
+    let removePendingBuild = false;
+    let renderStruct = true;
+    let structDestroyed = false;
+    /** @type {AnimationEvent|null} */
+    let stealthAnimationEvent = null;
+    const mapType = this.gameState.keyPlayers[this.targetPlayerType].planetMapType;
+    const mapId = this.gameState[mapType]?.mapId ?? null;
+
+    // Read the struct before the refresh, since a destroyed one may not survive
+    // it and its owner and type are what decide whether ore work is affected.
+    const structBeforeStatusChange = this.structManager.getStructById(messageData.detail.struct_id);
+    const structOnlineChanged = (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.ONLINE)
+      !== (messageData.detail.status & STRUCT_STATUS_FLAGS.ONLINE)
+    );
+
+    // A cancelled build confirms as a transition to DESTROYED on a struct that
+    // was never built (status 33 = MATERIALIZED + DESTROYED).
+    if (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.DESTROYED) === 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.DESTROYED) > 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.BUILT) === 0
+    ) {
+      this.structManager.finalizeBuildCancel(messageData.detail.struct_id, mapId);
+
+      // Skip refreshStruct so the struct isn't re-added.
+      return;
+    }
+
+    if (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.BUILT) === 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.BUILT) > 0
+    ) {
+      removePendingBuild = true;
+
+    } else if (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.HIDDEN) === 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.HIDDEN) > 0
+    ) {
+      renderStruct = false;
+      stealthAnimationEvent = this.animationEventFactory.makeStealthActivateAnimationEvent(
+        messageData.detail.struct_id,
+        mapId
+      );
+      this.gameState.animationEventQueue.enqueue(stealthAnimationEvent);
+
+    } else if (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.HIDDEN) > 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.HIDDEN) === 0
+    ) {
+      renderStruct = false;
+      stealthAnimationEvent = this.animationEventFactory.makeStealthDeactivateAnimationEvent(
+        messageData.detail.struct_id,
+        mapId
+      );
+      this.gameState.animationEventQueue.enqueue(stealthAnimationEvent);
+
+    } else if (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.DESTROYED) === 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.DESTROYED) > 0
+    ) {
+      // The destroy animation enqueued by handleStructAttack drives the visual
+      // teardown, and DestroyedStructManager clears the tile after the sweep
+      // delay. Re-rendering the viewer here would destroy the receive-damage
+      // animations mid-flight (their 'complete' listeners die with the lottie
+      // instance), stalling the animation queue so the destroy animation never
+      // dequeues.
+      renderStruct = false;
+      structDestroyed = true;
+
+    } else if (
+      (messageData.detail.status_old & STRUCT_STATUS_FLAGS.MATERIALIZED) === 0
+      && (messageData.detail.status & STRUCT_STATUS_FLAGS.MATERIALIZED) > 0
+    ) {
+      // A deploy materializes the struct before it is built, and nothing else
+      // draws the deployment indicator for a struct the player doesn't own:
+      // DeployOffcanvas covers only the player's own deploys and the struct
+      // layer is otherwise only synced when the map mounts. Rendering an
+      // unbuilt struct paints the indicator alone, so there is no struct
+      // viewer or in-flight animation here to tear down.
+      renderStruct = true;
+
+    } else {
+      // Any other status transition (e.g. ONLINE/OFFLINE, LOCKED, STORED, or
+      // a follow-up status change emitted alongside a transition we already
+      // handled) doesn't warrant a full struct viewer re-render — most
+      // indicators live on the HUD layer, which is still refreshed by the
+      // RenderStructHUDEvent dispatched unconditionally from refreshStruct.
+      // ONLINE/OFFLINE is handled there via ShowStructStillEvent so extractors
+      // and refineries can swap between the still image and active-loop
+      // animation without tearing down in-flight lottie playback.
+      renderStruct = false;
+    }
+
+    const refreshStructPromise = this.structManager.refreshStruct(
+      messageData.detail.struct_id,
+      mapType,
+      removePendingBuild,
+      renderStruct
+    );
+
+    if (stealthAnimationEvent && mapId) {
+      // Entering or leaving stealth changes which weapons can reach the struct,
+      // so any targeting mode still open needs its markers re-evaluated. Hold
+      // that until the cloak animation has played and the struct data
+      // confirming it has landed, otherwise the markers contradict what the
+      // player still sees on the map and are re-derived from a stale status.
+      stealthAnimationEvent.onAnimationEnd = () => {
+        refreshStructPromise.then(() => {
+          window.dispatchEvent(new RefreshAttackTargetsEvent(mapId));
+        });
+      };
+    }
+
+    refreshStructPromise.then((struct) => {
+
+      // Only settle the lock when one is actually held. Every player on the
+      // map feeds this handler, so clearing unconditionally lets an enemy's
+      // status change cancel a targeting mode the player is still in the
+      // middle of, which holds no lock until a target is picked.
+      if (this.gameState.actionBarLock.isLocked()) {
+        this.gameState.actionBarLock.clear();
+      } else if (structDestroyed && this.isActionSourceStruct(messageData.detail.struct_id)) {
+        // Nothing holds the lock during target selection, so a destroyed source
+        // struct would otherwise leave the player picking a target for a struct
+        // that no longer exists and sending an action the chain will reject.
+        this.gameState.actionBarLock.clear();
+
+        if (mapId) {
+          window.dispatchEvent(new ClearAttackTargetsEvent(mapId));
+          window.dispatchEvent(new ClearMoveTargetsEvent(mapId));
+          window.dispatchEvent(new ClearDefendTargetsEvent(mapId));
+        }
+      }
+
+      // Only kill build tasks for the player's own structs
+      if (
+        removePendingBuild
+        && struct
+        && (struct.owner === this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].id)
+      ) {
+        window.dispatchEvent(new TaskCmdKillEvent(messageData.detail.struct_id));
+      }
+
+      // An extractor or refinery going on or offline, or being destroyed,
+      // leaves the planet's shared ore clock where it was, so no clock event
+      // follows to say this struct's work has started or stopped. Only the work
+      // list knows, so go and re-read it.
+      if (
+        (structOnlineChanged || structDestroyed)
+        && this.isOreStruct(structBeforeStatusChange)
+        && structBeforeStatusChange.owner === this.gameState.keyPlayers[PLAYER_TYPES.PLAYER].id
+      ) {
+        window.dispatchEvent(new TaskCmdReconcileEvent());
+      }
+
+      // The owner's fleet holds a reference to the command struct that needs to be updated
+      this.syncFleetCommandStruct(struct);
+    });
+  }
+
+  /**
+   * @param {Struct|null} struct
+   * @return {boolean} whether the struct's work runs off one of the planet's
+   * shared ore clocks
+   */
+  isOreStruct(struct) {
+    if (!struct) {
+      return false;
+    }
+
+    const structType = this.gameState.structTypes.getStructTypeById(struct.type);
+
+    return !!structType && (
+      structType.type === STRUCT_TYPES.ORE_EXTRACTOR
+      || structType.type === STRUCT_TYPES.ORE_REFINERY
+    );
+  }
+
+  /**
+   * Update the owning key player's fleet to point at a command struct that has
+   * just been built.
+   *
+   * @param {Struct|null} struct
+   */
+  syncFleetCommandStruct(struct) {
+    if (!struct) {
+      return;
+    }
+
+    const playerType = this.getOwnerPlayerType(struct.owner);
+    const fleet = playerType ? this.gameState.keyPlayers[playerType].fleet : null;
+
+    // The fleet id also stands in for a fleet that hasn't been loaded yet.
+    if (!fleet || struct.location_id !== fleet.id || fleet.command_struct === struct.id) {
+      return;
+    }
+
+    if (!this.structManager.isCommandStruct(struct) || !struct.isBuilt() || struct.isDestroyed()) {
+      return;
+    }
+
+    fleet.command_struct = struct.id;
+
+    // Whether the command struct is alive decides whether a planet's defenses
+    // hold, and the shield status has already been rendered against the old
+    // pointer by the struct refresh that led here.
+    window.dispatchEvent(new StructCountChangedEvent(playerType));
+  }
+
+  /**
+   * @param {string} structId
+   * @return {boolean} whether the struct is the one driving the action the
+   * player currently has open on the action bar
+   */
+  isActionSourceStruct(structId) {
+    const actionSourceStruct = this.gameState.actionBarLock.getActionSourceStruct();
+
+    return !!actionSourceStruct && actionSourceStruct.id === structId;
+  }
+
+  /**
+   * @param {string} subject
+   * @param {object} messageData
+   */
+  handleStructMove(subject, messageData) {
+    if (!(
+      messageData.category === 'struct_move'
+      && messageData.subject === subject
+    )) {
+      return;
+    }
+
+    const structId = messageData.detail.struct_id;
+    const oldStruct = this.structManager.getStructById(structId);
+    const mapType = this.gameState.keyPlayers[this.targetPlayerType].planetMapType;
+    const mapId = this.gameState[mapType]?.mapId;
+
+    // 1. Enqueue depart animation
+    const departEvent = new AnimationEvent(
+      structId,
+      [ANIMATION.NAMES.MOVE.DEPART],
+      false,
+      false,
+      {},
+      mapId ?? null
+    );
+
+    departEvent.onAnimationEnd = async () => {
+      if (oldStruct && mapId) {
+        const oldTileType = this.structManager.getTileTypeFromStruct(oldStruct);
+        const oldAmbit = oldStruct.operating_ambit.toUpperCase();
+
+        window.dispatchEvent(new ClearStructTileEvent(
+          mapId, oldTileType, oldAmbit, oldStruct.slot, oldStruct.owner
+        ));
+        window.dispatchEvent(new UpdateTileStructIdEvent(
+          mapId, oldTileType, oldAmbit, oldStruct.slot, oldStruct.owner, ''
+        ));
+      }
+
+      await this.structManager.refreshStruct(structId, mapType);
+    };
+
+    this.gameState.animationEventQueue.enqueue(departEvent);
+
+    // 2. Enqueue arrive animation (plays after depart + side effects complete)
+    const arriveEvent = new AnimationEvent(
+      structId,
+      [ANIMATION.NAMES.MOVE.ARRIVE],
+      false,
+      true,
+      {},
+      mapId ?? null
+    );
+
+    arriveEvent.onAnimationEnd = () => {
+      this.gameState.actionBarLock.clear();
+    };
+
+    this.gameState.animationEventQueue.enqueue(arriveEvent);
+  }
+
+  /**
+   * @param {string} subject
+   * @param {object} messageData
+   */
+  handleStructDefenseAdd(subject, messageData) {
+    if (!(
+      messageData.category === 'struct_defense_add'
+      && messageData.subject === subject
+    )) {
+      return;
+    }
+
+    const defenderStructId = messageData.detail.defender_struct_id;
+    const protectedStructId = messageData.detail.protected_struct_id;
+    const mapType = this.gameState.keyPlayers[this.targetPlayerType].planetMapType;
+
+    // Refresh both the defender and protected structs
+    Promise.all([
+      this.structManager.refreshStruct(defenderStructId, mapType, false, false),
+      this.structManager.refreshStruct(protectedStructId, mapType, false, false)
+    ]).then(() => {
+      // Only clear actionBarLock if this was triggered by the current player's action
+      if (
+        this.gameState.actionBarLock.getCurrentAction() === STRUCT_ACTIONS.DEFENSE_SET
+        && this.gameState.actionBarLock.isLocked()
+      ) {
+        this.gameState.actionBarLock.clear();
+      }
+    });
+  }
+
+  /**
+   * @param {string} subject
+   * @param {object} messageData
+   */
+  handleStructDefenseRemove(subject, messageData) {
+    if (!(
+      messageData.category === 'struct_defense_remove'
+      && messageData.subject === subject
+    )) {
+      return;
+    }
+
+    const defenderStructId = messageData.detail.defender_struct_id;
+    const protectedStructId = messageData.detail.protected_struct_id;
+    const mapType = this.gameState.keyPlayers[this.targetPlayerType].planetMapType;
+
+    // Refresh both the defender and protected structs
+    Promise.all([
+      this.structManager.refreshStruct(defenderStructId, mapType, false, false),
+      this.structManager.refreshStruct(protectedStructId, mapType, false, false)
+    ]).then(() => {
+      // Only clear actionBarLock if this was triggered by the current player's action
+      if (
+        this.gameState.actionBarLock.getCurrentAction() === STRUCT_ACTIONS.DEFENSE_CLEAR
+        && this.gameState.actionBarLock.isLocked()
+      ) {
+        this.gameState.actionBarLock.clear();
+      }
+    });
+  }
+
+  /**
+   * @param {string} subject
+   * @param {object} messageData
+   */
+  handleStructAttack(subject, messageData) {
+    if (!(
+      messageData.category === 'struct_attack'
+      && messageData.subject === subject
+    )) {
+      return;
+    }
+
+    const mapType = this.gameState.keyPlayers[this.targetPlayerType].planetMapType;
+    const mapId = this.gameState[mapType]?.mapId ?? null;
+    const structIdsToRefresh = new Set();
+
+    structIdsToRefresh.add(messageData.detail.attackerStructId);
+
+    // Track the attacker's running health across all shots/counters so each
+    // animation event for the attacker can carry the partial health value at
+    // the point in the sequence at which it ends. Without this, gameState
+    // (refreshed in parallel with the queue) would hold the final post-attack
+    // health and the still/HUD would jump straight to that final state after
+    // the first counter animation.
+    let runningAttackerHealth = parseInt('' + (messageData.detail.attackerHealthBefore || 0));
+
+    for (let i = 0; i < messageData.detail.eventAttackShotDetail.length; i++) {
+
+      const eventAttackShotDetail = messageData.detail.eventAttackShotDetail[i];
+
+      let defenderCounterDestroyedAttacker = false;
+
+      for (let j = 0; j < eventAttackShotDetail.eventAttackDefenderCounterDetail.length; j++) {
+
+        const eventAttackDefenderCounterDetail = eventAttackShotDetail.eventAttackDefenderCounterDetail[j];
+
+        // i. Play counterByStruct attack animation
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeAttackAnimationEvent(
+            eventAttackDefenderCounterDetail.counterByStructId,
+            eventAttackDefenderCounterDetail.counterByStructWeaponSystem,
+            mapId
+          )
+        );
+
+        const counterDamage = parseInt('' + (eventAttackDefenderCounterDetail.counterDamage || 0));
+        const attackerHealthBeforeCounter = runningAttackerHealth;
+        const attackerHealthAfterCounter = Math.max(0, attackerHealthBeforeCounter - counterDamage);
+        runningAttackerHealth = attackerHealthAfterCounter;
+
+        // ii. Play attackerStruct receiving damage animation
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeReceiveDamageAnimationEvent(
+            messageData.detail.attackerStructId,
+            eventAttackDefenderCounterDetail.counterByStructType,
+            eventAttackDefenderCounterDetail.counterByStructOperatingAmbit,
+            eventAttackDefenderCounterDetail.counterByStructWeaponSystem,
+            messageData.detail.attackerStructType,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.attackerStructLocationType,
+            attackerHealthBeforeCounter,
+            attackerHealthAfterCounter,
+            false,
+            '',
+            mapId
+          )
+        );
+
+        if (eventAttackDefenderCounterDetail.counterDestroyedAttacker) {
+          this.gameState.animationEventQueue.enqueue(
+            this.animationEventFactory.makeDestroyAnimationEvent(
+              messageData.detail.attackerStructId,
+              messageData.detail.attackerStructOperatingAmbit,
+              messageData.detail.attackerStructLocationType,
+              mapId
+            )
+          );
+
+          defenderCounterDestroyedAttacker = true;
+          break;
+        }
+      }
+
+      if (!defenderCounterDestroyedAttacker) {
+        // b. If not counterDestroyedAttacker, play attackerStruct attack animation.
+        //    Thread runningAttackerHealth so the still/HUD don't snap to the final
+        //    gameState health when this animation ends; the target counter (if any)
+        //    is still ahead of us in the queue.
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeAttackAnimationEvent(
+            messageData.detail.attackerStructId,
+            messageData.detail.weaponSystem,
+            mapId,
+            runningAttackerHealth
+          )
+        );
+      }
+
+      // c. If evaded, play evade animation
+      if (eventAttackShotDetail.evaded) {
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeReceiveDamageAnimationEvent(
+            eventAttackShotDetail.targetStructId,
+            messageData.detail.attackerStructType,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.weaponSystem,
+            eventAttackShotDetail.targetStructType,
+            eventAttackShotDetail.targetStructOperatingAmbit,
+            eventAttackShotDetail.targetStructLocationType,
+            eventAttackShotDetail.targetHealthBefore,
+            eventAttackShotDetail.targetHealthAfter,
+            eventAttackShotDetail.evaded,
+            eventAttackShotDetail.evadedCause,
+            mapId
+          )
+        );
+      } else if (
+        eventAttackShotDetail.evadedByPlanetaryDefenses
+        && eventAttackShotDetail.evadedByPlanetaryDefensesCause === STRUCT_PLANETARY_DEFENSES.LOW_ORBIT_BALLISTIC_INTERCEPTOR_NETWORK
+      ) {
+
+        // The message doesn't carry the Jamming Satellite struct id, but the listener is scoped
+        // to a single planet (this.targetPlayerType's planet) and there is at most
+        // one jamming satellite per planet, so we can locate it by struct
+        // type among the structs owned by this listener's target player.
+        const jammingSatelliteStruct = this.gameState.getJammingSatelliteByKeyPlayer(this.targetPlayerType);
+
+        if (jammingSatelliteStruct) {
+          this.gameState.animationEventQueue.enqueue(
+            this.animationEventFactory.makeReceiveDamageAnimationEvent(
+              jammingSatelliteStruct.id,
+              messageData.detail.attackerStructType,
+              messageData.detail.attackerStructOperatingAmbit,
+              messageData.detail.weaponSystem,
+              STRUCT_TYPES.JAMMING_SATELLITE,
+              jammingSatelliteStruct.operating_ambit,
+              jammingSatelliteStruct.location_type,
+              jammingSatelliteStruct.health,
+              jammingSatelliteStruct.health,
+              true,
+              STRUCT_PLANETARY_DEFENSES.LOW_ORBIT_BALLISTIC_INTERCEPTOR_NETWORK,
+              mapId
+            )
+          );
+
+          structIdsToRefresh.add(jammingSatelliteStruct.id);
+        }
+      }
+
+      if (eventAttackShotDetail.blocked) {
+        // d. If blocked, play blockedByStruct receiving damage animation
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeReceiveDamageAnimationEvent(
+            eventAttackShotDetail.blockedByStructId,
+            messageData.detail.attackerStructType,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.weaponSystem,
+            eventAttackShotDetail.blockedByStructType,
+            eventAttackShotDetail.blockedByStructOperatingAmbit,
+            eventAttackShotDetail.blockedByStructLocationType,
+            eventAttackShotDetail.blockerHealthBefore,
+            eventAttackShotDetail.blockerHealthAfter,
+            false,
+            '',
+            mapId
+          )
+        );
+
+        if (eventAttackShotDetail.blockerDestroyed) {
+          this.gameState.animationEventQueue.enqueue(
+            this.animationEventFactory.makeDestroyAnimationEvent(
+              eventAttackShotDetail.blockedByStructId,
+              eventAttackShotDetail.blockedByStructOperatingAmbit,
+              eventAttackShotDetail.blockedByStructLocationType,
+              mapId
+            )
+          );
+        }
+
+        structIdsToRefresh.add(eventAttackShotDetail.blockedByStructId);
+      }
+
+      if (parseInt(eventAttackShotDetail.targetHealthBefore) !== parseInt(eventAttackShotDetail.targetHealthAfter)) {
+        // e. If targetHealthBefore !== targetHealthAfter, play targetStruct receive damage animation
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeReceiveDamageAnimationEvent(
+            eventAttackShotDetail.targetStructId,
+            messageData.detail.attackerStructType,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.weaponSystem,
+            eventAttackShotDetail.targetStructType,
+            eventAttackShotDetail.targetStructOperatingAmbit,
+            eventAttackShotDetail.targetStructLocationType,
+            eventAttackShotDetail.targetHealthBefore,
+            eventAttackShotDetail.targetHealthAfter,
+            false,
+            '',
+            mapId
+          )
+        );
+
+        if (eventAttackShotDetail.targetDestroyed) {
+          this.gameState.animationEventQueue.enqueue(
+            this.animationEventFactory.makeDestroyAnimationEvent(
+              eventAttackShotDetail.targetStructId,
+              eventAttackShotDetail.targetStructOperatingAmbit,
+              eventAttackShotDetail.targetStructLocationType,
+              mapId
+            )
+          );
+        }
+
+        structIdsToRefresh.add(eventAttackShotDetail.targetStructId);
+      }
+
+      if (!eventAttackShotDetail.targetDestroyed && eventAttackShotDetail.targetCountered) {
+        // f. If targetHealthAfter > 0 and targetCountered, play targetStruct attack animation.
+        //    Thread targetHealthAfter so the still/HUD reflect the post-damage value when this
+        //    animation ends; otherwise the still would fall back to gameState (which may not
+        //    have refreshed yet) and visually flash backward to the pre-damage health.
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeAttackAnimationEvent(
+            eventAttackShotDetail.targetStructId,
+            eventAttackShotDetail.targetCounterWeaponSystem,
+            mapId,
+            eventAttackShotDetail.targetHealthAfter
+          )
+        );
+
+        const targetCounterDamage = parseInt('' + (eventAttackShotDetail.targetCounteredDamage || 0));
+        const attackerHealthBeforeTargetCounter = runningAttackerHealth;
+        const attackerHealthAfterTargetCounter = Math.max(0, attackerHealthBeforeTargetCounter - targetCounterDamage);
+        runningAttackerHealth = attackerHealthAfterTargetCounter;
+
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeReceiveDamageAnimationEvent(
+            messageData.detail.attackerStructId,
+            eventAttackShotDetail.targetStructType,
+            eventAttackShotDetail.targetStructOperatingAmbit,
+            eventAttackShotDetail.targetCounterWeaponSystem,
+            messageData.detail.attackerStructType,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.attackerStructLocationType,
+            attackerHealthBeforeTargetCounter,
+            attackerHealthAfterTargetCounter,
+            false,
+            '',
+            mapId
+          )
+        );
+      }
+
+      if (eventAttackShotDetail.targetCounterDestroyedAttacker) {
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeDestroyAnimationEvent(
+            messageData.detail.attackerStructId,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.attackerStructLocationType,
+            mapId
+          )
+        );
+      }
+    }
+
+    if (messageData.detail.planetaryDefenseCannonDamageToAttacker) {
+
+      // The message doesn't carry the PDC struct id, but the listener is scoped
+      // to a single planet (this.targetPlayerType's planet) and there is at most
+      // one planetary defense cannon per planet, so we can locate it by struct
+      // type among the structs owned by this listener's target player.
+      const planetaryDefenseCannonStruct = this.gameState.getPlanetaryDefenseCannonByKeyPlayer(this.targetPlayerType);
+
+      const planetaryDefenseCannonDamage = parseInt(messageData.detail.planetaryDefenseCannonDamage);
+      const attackerHealthBeforePDCCounter = runningAttackerHealth;
+      const attackerHealthAfterPDCCounter = Math.max(0, attackerHealthBeforePDCCounter - planetaryDefenseCannonDamage);
+      runningAttackerHealth = attackerHealthAfterPDCCounter;
+
+      if (planetaryDefenseCannonStruct) {
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeAttackAnimationEvent(
+            planetaryDefenseCannonStruct.id,
+            STRUCT_WEAPON_SYSTEM.PRIMARY_WEAPON,
+            mapId
+          )
+        );
+
+        this.gameState.animationEventQueue.enqueue(
+          this.animationEventFactory.makeReceiveDamageAnimationEvent(
+            messageData.detail.attackerStructId,
+            STRUCT_TYPES.PLANETARY_DEFENSE_CANNON,
+            planetaryDefenseCannonStruct.operating_ambit,
+            STRUCT_WEAPON_SYSTEM.PRIMARY_WEAPON,
+            messageData.detail.attackerStructType,
+            messageData.detail.attackerStructOperatingAmbit,
+            messageData.detail.attackerStructLocationType,
+            attackerHealthBeforePDCCounter,
+            attackerHealthAfterPDCCounter,
+            false,
+            '',
+            mapId
+          )
+        );
+
+        structIdsToRefresh.add(planetaryDefenseCannonStruct.id);
+
+        if (messageData.detail.planetaryDefenseCannonDamageDestroyedAttacker) {
+          this.gameState.animationEventQueue.enqueue(
+            this.animationEventFactory.makeDestroyAnimationEvent(
+              messageData.detail.attackerStructId,
+              messageData.detail.attackerStructOperatingAmbit,
+              messageData.detail.attackerStructLocationType,
+              mapId
+            )
+          );
+        }
+      }
+    }
+
+    // Refresh all involved structs
+    const refreshPromises = Array.from(structIdsToRefresh).map(
+      structId => this.structManager.refreshStruct(structId, mapType, false, false)
+    );
+
+    Promise.all(refreshPromises).then(() => {
+      // Only clear actionBarLock if this was triggered by the current player's attack action
+      if (
+        (this.gameState.actionBarLock.getCurrentAction() === STRUCT_ACTIONS.ATTACK_PRIMARY_WEAPON
+          || this.gameState.actionBarLock.getCurrentAction() === STRUCT_ACTIONS.ATTACK_SECONDARY_WEAPON)
+        && this.gameState.actionBarLock.isLocked()
+      ) {
+        this.gameState.actionBarLock.clear();
+      }
+    });
+  }
+
+  handler(messageData) {
+    const targetPlanetId = this.gameState.keyPlayers[this.targetPlayerType].getPlanetId();
+    const playerId = this.gameState.keyPlayers[this.targetPlayerType].id;
+
+    // Skip if we don't have a target planet ID yet
+    if (!targetPlanetId) {
+      return;
+    }
+
+    const subject = `structs.planet.${targetPlanetId}.${playerId}`;
+
+    this.handleStructBlockBuildStart(subject, messageData);
+    this.handleStructStatus(subject, messageData);
+    this.handleStructMove(subject, messageData);
+    this.handleStructDefenseAdd(subject, messageData);
+    this.handleStructDefenseRemove(subject, messageData);
+    this.handleStructAttack(subject, messageData);
+  }
+}
