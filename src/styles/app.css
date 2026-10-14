@@ -274,6 +274,9 @@ button { font: inherit; color: inherit; }
 
 .loading { position: absolute; inset: 0; display: grid; place-items: center; z-index: 40; background: var(--sky); font-family: var(--display); font-size: 1.4rem; color: var(--berry-d); }
 .loading .spin { width: 64px; height: 64px; margin: 0 auto 12px; animation: spin 1.6s linear infinite; }
+.noscript { position: fixed; inset: 0; z-index: 50; overflow: auto; background: var(--sky); padding: 48px 20px; font-size: 17px; line-height: 1.5; }
+.noscript > * { max-width: 620px; margin-left: auto; margin-right: auto; }
+.noscript h1 { font-family: var(--display); font-size: 3rem; color: var(--berry-d); margin-bottom: .2em; }
 
 table.gloss { width: 100%; border-collapse: collapse; font-size: .86rem; }
 table.gloss td { padding: 5px 6px; border-bottom: 1px dashed var(--line); vertical-align: top; }

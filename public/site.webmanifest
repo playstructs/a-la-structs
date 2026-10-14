@@ -1,0 +1,18 @@
+{
+  "name": "À la Structs",
+  "short_name": "À la Structs",
+  "description": "Run a cozy critter restaurant. Out-serve the rivals across town.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#bfe7f5",
+  "theme_color": "#bfe7f5",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    { "src": "favicon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}

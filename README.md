@@ -29,6 +29,21 @@ Pick a critter, name your restaurant, then choose:
 - **Open for real** — connects to a Structs guild through the structs-webapp
   game core (wallet, signing queue, GRASS stream, guild API, proof-of-work).
 
+### Deploying (SEO)
+
+Set the public URL when you build so crawlers and link previews get absolute
+URLs:
+
+```bash
+VITE_SITE_URL=https://your-domain.example/ npm run build
+```
+
+That adds a canonical link, `og:url`, absolute `og:image`/`twitter:image` and
+schema.org JSON-LD (`VideoGame`) to `index.html`, and writes `robots.txt` and
+`sitemap.xml` into `dist/` (see `scripts/seo.mjs`). Without it the build warns
+and only writes `robots.txt`. Icons, the web manifest and the 1200×630 social
+card (`og-image.jpg`) live in `public/`.
+
 ### Connecting to a guild
 
 Choose **Open for real**, then pick a guild. Nothing about a guild is

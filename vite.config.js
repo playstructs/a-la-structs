@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite';
 import path from 'node:path';
 import { structsUiShimVite, structsUiShimEsbuild } from './scripts/structs-shim.mjs';
+import { seoVite } from './scripts/seo.mjs';
 
 /**
  * Dev server proxies a Structs guild so the game core can talk to it from
@@ -33,7 +34,7 @@ export default defineConfig(({ mode }) => {
     define['import.meta.env.VITE_PROXY_RPC'] = '"1"';
   }
   return {
-    plugins: [structsUiShimVite(path.resolve('src/services/live/noop.js'))],
+    plugins: [structsUiShimVite(path.resolve('src/services/live/noop.js')), seoVite(env.VITE_SITE_URL)],
     resolve: { alias: { crypto: path.resolve('src/services/live/empty.js') } },
     define: { global: 'globalThis', ...define },
     // The dependency scanner runs esbuild directly, so it needs the shim too

@@ -3,14 +3,54 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>À la Structs</title>
-  <meta name="description" content="A cozy critter-restaurant skin for Structs.">
+  <title>À la Structs — Cozy Critter Restaurant Game on Structs</title>
+  <meta name="description" content="Run a cozy critter restaurant in your browser: hire animal staff, discover recipes and out-serve rival restaurants across town. A free 3D skin for Structs.">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <meta name="theme-color" content="#bfe7f5">
+  <meta name="color-scheme" content="light">
+  <meta name="application-name" content="À la Structs">
+  <meta name="apple-mobile-web-app-title" content="À la Structs">
+
+  <link rel="icon" href="/favicon.ico" sizes="48x48">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+
+  <!-- Social cards. og:url, canonical and absolute image URLs are added at
+       build time from VITE_SITE_URL (see scripts/seo.mjs). -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="À la Structs">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="À la Structs — Cozy Critter Restaurant Game">
+  <meta property="og:description" content="Run a cozy critter restaurant. Out-serve the rivals across town. A free 3D browser game built on Structs.">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:type" content="image/jpeg">
+  <meta property="og:image:alt" content="A 3D restaurant full of animal staff and customers, with the À la Structs logo.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="À la Structs — Cozy Critter Restaurant Game">
+  <meta name="twitter:description" content="Run a cozy critter restaurant. Out-serve the rivals across town. A free 3D browser game built on Structs.">
+  <meta name="twitter:image:alt" content="A 3D restaurant full of animal staff and customers, with the À la Structs logo.">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div id="app"><div class="loading"><div><svg class="spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#fff" stroke="#c9d3da" stroke-width="1.5"/><circle cx="12" cy="12" r="5" fill="#ffd6a5"/></svg>Warming up the kitchen…</div></div></div>
+  <div id="app"><div class="loading"><div><svg class="spin" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="#fff" stroke="#c9d3da" stroke-width="1.5"/><circle cx="12" cy="12" r="5" fill="#ffd6a5"/></svg>Warming up the kitchen…</div></div></div>
+  <noscript>
+    <main class="noscript">
+      <h1>À la Structs</h1>
+      <p><strong>Run a cozy critter restaurant. Out-serve the rivals across town.</strong></p>
+      <p>À la Structs is a free 3D browser game and a restaurant-themed skin for Structs. Your animal staff run the kitchen: the Chef discovers recipes, the Sous Chef turns them into gold, and a sign spinner draws in the crowd. When you're ready, send your crew across town as customers for a service challenge against a rival restaurant.</p>
+      <ul>
+        <li>Pick a critter and name your restaurant</li>
+        <li>Play the offline demo kitchen against computer rivals</li>
+        <li>Or open for real and join a Structs guild</li>
+      </ul>
+      <p>The game runs in your browser with WebGL. Please turn on JavaScript to play.</p>
+    </main>
+  </noscript>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
+import { seoHtml, siteUrl } from './seo.mjs';
 
 const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const esbuildPath = process.env.ESBUILD || 'esbuild';
@@ -25,8 +26,17 @@ const result = await esbuild.build({
 });
 const js = result.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');
 const css = fs.readFileSync(path.join(root, 'src/styles/app.css'), 'utf8');
-const html = `<title>À la Structs</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
+// Social image and canonical only make sense with a public URL for this page.
+const site = siteUrl(process.env.VITE_SITE_URL);
+const html = `<title>À la Structs — Cozy Critter Restaurant Game on Structs</title>
+<meta name="description" content="Run a cozy critter restaurant in your browser: hire animal staff, discover recipes and out-serve rival restaurants across town. A free 3D skin for Structs.">
+<meta name="theme-color" content="#bfe7f5">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="À la Structs">
+<meta property="og:title" content="À la Structs — Cozy Critter Restaurant Game">
+<meta property="og:description" content="Run a cozy critter restaurant. Out-serve the rivals across town. A free 3D browser game built on Structs.">
+<meta name="twitter:card" content="summary_large_image">
+${site ? seoHtml(site) + '\n' : ''}<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet">
 <style>
