@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions: { contents: read }
+
+concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+
+      - name: Demo smoke (economy, hiring, a challenge both ways)
+        run: npm run demo-smoke
+
+      - name: Build at the root of a domain
+        run: npm run build
+        env: { VITE_SITE_URL: https://example.test/ }
+      - name: Check root build
+        run: |
+          grep -q 'src="/assets/' dist/index.html
+          test -f dist/robots.txt && test -f dist/sitemap.xml && test -f dist/site.webmanifest
+
+      # What a fork without a custom domain gets: <owner>.github.io/<repo>/.
+      - name: Build under a project path
+        run: npm run build
+        env: { VITE_SITE_URL: https://example.github.io/a-la-structs }
+      - name: Check every asset URL starts with the project path
+        run: |
+          grep -q 'src="/a-la-structs/assets/' dist/index.html
+          if grep -oE '(src|href)="/[^"]*"' dist/index.html | grep -v '="/a-la-structs/'; then
+            echo "::error::root-relative URL in a project-path build"; exit 1
+          fi
+
+      - name: Build the single-file preview page
+        run: npm run build:preview-page

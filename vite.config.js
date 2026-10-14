@@ -13,8 +13,17 @@ import { seoVite } from './scripts/seo.mjs';
  *
  * With GRASS_URL / RPC_URL set, the client is pointed at /grass and /rpc on
  * this origin (VITE_PROXY_GRASS / VITE_PROXY_RPC) and the dev server relays.
+ *
+ * Builds are served from the path in VITE_SITE_URL (e.g. /a-la-structs/ on a
+ * GitHub Pages project site); VITE_BASE overrides it. The dev server stays at /.
  */
-export default defineConfig(({ mode }) => {
+export function basePath(env) {
+  let b = env.VITE_BASE || (env.VITE_SITE_URL ? new URL(env.VITE_SITE_URL).pathname : '/');
+  if (!b.startsWith('/')) b = '/' + b;
+  return b.endsWith('/') ? b : b + '/';
+}
+
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   // By default the page finds each guild's services from the guild's own
   // published config and talks to them directly. GUILD_URL switches to the
@@ -34,6 +43,7 @@ export default defineConfig(({ mode }) => {
     define['import.meta.env.VITE_PROXY_RPC'] = '"1"';
   }
   return {
+    base: command === 'build' ? basePath(env) : '/',
     plugins: [structsUiShimVite(path.resolve('src/services/live/noop.js')), seoVite(env.VITE_SITE_URL)],
     resolve: { alias: { crypto: path.resolve('src/services/live/empty.js') } },
     define: { global: 'globalThis', ...define },

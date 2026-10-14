@@ -44,6 +44,28 @@ schema.org JSON-LD (`VideoGame`) to `index.html`, and writes `robots.txt` and
 and only writes `robots.txt`. Icons, the web manifest and the 1200×630 social
 card (`og-image.jpg`) live in `public/`.
 
+The URL's path is also the base path, so
+`VITE_SITE_URL=https://you.github.io/a-la-structs` builds for `/a-la-structs/`.
+`VITE_BASE` overrides the path on its own. The dev server always runs at `/`.
+
+### CI and GitHub Pages
+
+Two workflows live in `.github/workflows/`:
+
+- **CI** (`ci.yml`, every PR and push to `main`): `npm ci`, the demo smoke
+  test, a build at a domain root, a build under `/a-la-structs/` that fails on
+  any root-relative URL, and the single-file preview page.
+- **Deploy to GitHub Pages** (`pages.yml`, push to `main`): smoke test, then
+  `npm run build` with `VITE_SITE_URL` set to the Pages address, then publish
+  `dist/`. It doesn't wait for CI.
+
+One-time setup: **Settings → Pages → Source: GitHub Actions**. For a custom
+domain, set it under Settings → Pages and add the DNS record. Optional
+repository variables (Settings → Secrets and variables → Actions → Variables):
+`VITE_SITE_URL`, `VITE_LCD_URL`, `VITE_RPC_URL`, `VITE_GRASS_URL`,
+`VITE_GUILD_ID`, `VITE_MATRIX_HOMESERVER`, `VITE_MATRIX_ROOM`. No secrets are
+needed.
+
 ### Connecting to a guild
 
 Choose **Open for real**, then pick a guild. Nothing about a guild is
