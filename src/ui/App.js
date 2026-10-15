@@ -19,6 +19,7 @@ import { keyFob } from './dom.js';
 import { nameProblem } from '../services/Service.js';
 import { forgetSession } from '../services/session.js';
 import { sfx } from '../audio/sfx.js';
+import { music } from '../audio/music.js';
 import { BRAND, TERMS, ACTIONS, CHALLENGE_STATUS } from '../lexicon/terms.js';
 import { roleOf } from '../lexicon/roles.js';
 import { AREAS } from '../lexicon/areas.js';
@@ -78,6 +79,9 @@ export class App {
     this.engine = new Engine(this.stage, { quality: this.prefs.quality || 'high' });
     sfx.setEnabled(this.prefs.sound !== false);
     for (const [name, v] of Object.entries(this.prefs.volume || {})) sfx.setVolume(name, v);
+    music.setChoice(this.prefs.music || {});
+    // Keep "Now playing" in Settings current.
+    music.onChange(() => { if (this.sheet?.kind === 'settings') this.refreshSheet(); });
     // Browsers only allow sound after the player does something.
     const unlock = () => { sfx.unlock(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
     window.addEventListener('pointerdown', unlock);
@@ -508,7 +512,8 @@ export class App {
       this.syncChallenge();
       this.renderChallengeHud();
     }
-    if (this.sheet && (all || w.has('structs') || w.has('wallet') || w.has('challenge') || (w.has('tick') && this.sheet.kind === 'staff'))) this.refreshSheet();
+    // Settings shows nothing from the game, so it only redraws when you change something there.
+    if (this.sheet && this.sheet.kind !== 'settings' && (all || w.has('structs') || w.has('wallet') || w.has('challenge') || (w.has('tick') && this.sheet.kind === 'staff'))) this.refreshSheet();
     this.renderHud();
     this.renderDock();
   }
@@ -726,7 +731,7 @@ export class App {
     this.leavePage();
     if (kind === 'hire') this.lastHireSection = arg;
     this.sheet = { kind, arg };
-    this.refreshSheet();
+    this.refreshSheet(true);   // asked for by a click, so always redraw
     this.renderDock();
   }
 
@@ -814,7 +819,7 @@ export class App {
     if (kind === 'staff') content = Panels.staffSheet(this, arg);
     else if (kind === 'hire') content = Panels.hireSheet(this, arg);
     else if (kind === 'roster') content = Panels.rosterSheet(this);
-    else if (kind === 'settings') { if (document.activeElement?.closest?.('.sheet')) return; content = Panels.settingsSheet(this); }
+    else if (kind === 'settings') content = Panels.settingsSheet(this);
     else if (kind === 'notebook') content = Panels.notebookSheet(this);
     else if (kind === 'rivals') content = Panels.rivalsSheet(this, this.rivalResult, this.rivalFilters);
     else if (PAGES[kind]) content = this.pageContent();
@@ -1315,6 +1320,14 @@ export class App {
   toggleSound() {
     this.prefs.sound = this.prefs.sound === false;
     sfx.setEnabled(this.prefs.sound !== false);
+    this.savePrefs();
+    this.openSheet('settings');
+  }
+
+  /** Which music plays: { mode: 'scene' | 'shuffle' | 'one', song }. */
+  setMusicChoice(choice) {
+    music.setChoice({ ...music.choice, ...choice });
+    this.prefs.music = music.choice;
     this.savePrefs();
     this.openSheet('settings');
   }

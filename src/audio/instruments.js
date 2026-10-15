@@ -5,6 +5,14 @@
  */
 import { audioCtx, out, noise, cleanup, adsr } from './engine.js';
 
+/**
+ * Music notes go through the playing song's own fader (so songs crossfade);
+ * the music player points 'music' at it while it schedules.
+ */
+let musicDest = 'music';
+export function routeMusic(d) { musicDest = d || 'music'; }
+const dest = (b) => (b === 'music' ? musicDest : b);
+
 const osc = (type, freq, t) => { const o = audioCtx().createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t); o.start(t); return o; };
 const gain = (v = 0) => { const g = audioCtx().createGain(); g.gain.value = v; return g; };
 const filter = (type, freq, q = 0.7) => { const f = audioCtx().createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q; return f; };
@@ -22,7 +30,7 @@ export function epiano(t, freq, dur, { vel = 0.5, bus = 'music', pan = 0, wet = 
   const end = adsr(env.gain, t, { a: 0.006, d: 1.4, s: 0.45, hold: dur, r: 0.45, peak: 0.32 * vel });
   car.connect(env); tine.connect(tineG); tineG.connect(env);
   const lp = filter('lowpass', 2600); env.connect(lp);
-  out(lp, bus, { pan, wet });
+  out(lp, dest(bus), { pan, wet });
   [car, mod, tine].forEach((o) => o.stop(end + 0.05));
   cleanup([car, mod, modG, tine, tineG, env, lp], end + 0.1);
   void c;
@@ -35,7 +43,7 @@ export function bass(t, freq, dur, { vel = 0.6, bus = 'music', wet = 0.05 } = {}
   const end = adsr(env.gain, t, { a: 0.008, d: 0.5, s: 0.55, hold: dur * 0.85, r: 0.12, peak: 0.55 * vel });
   const lp = filter('lowpass', 700);
   s.connect(env); tr.connect(trG); trG.connect(env); env.connect(lp);
-  out(lp, bus, { wet });
+  out(lp, dest(bus), { wet });
   [s, tr].forEach((o) => o.stop(end + 0.05));
   cleanup([s, tr, trG, env, lp], end + 0.1);
 }
@@ -49,7 +57,7 @@ export function pluck(t, freq, { vel = 0.5, bus = 'music', pan = 0, decay = 1.2,
   const env = gain(0);
   const end = adsr(env.gain, t, { a: 0.003, d: decay, peak: 0.22 * vel });
   a.connect(lp); b.connect(lp); lp.connect(env);
-  out(env, bus, { pan, wet });
+  out(env, dest(bus), { pan, wet });
   [a, b].forEach((o) => o.stop(end + 0.05));
   cleanup([a, b, lp, env], end + 0.1);
 }
@@ -67,7 +75,7 @@ export function bell(t, freq, { vel = 0.5, bus = 'music', pan = 0, decay = 1.6, 
     endAll = Math.max(endAll, end);
     nodes.push(o, g);
   }
-  out(sum, bus, { pan, wet });
+  out(sum, dest(bus), { pan, wet });
   cleanup([...nodes, sum], endAll + 0.1);
 }
 
@@ -80,7 +88,7 @@ export function marimba(t, freq, { vel = 0.5, bus = 'music', pan = 0, wet = 0.2 
   adsr(g10.gain, t, { a: 0.001, d: 0.02, peak: 0.05 * vel });
   f.connect(g); o4.connect(g4); o10.connect(g10);
   const sum = gain(1); [g, g4, g10].forEach((x) => x.connect(sum));
-  out(sum, bus, { pan, wet });
+  out(sum, dest(bus), { pan, wet });
   [f, o4, o10].forEach((x) => x.stop(end + 0.05));
   cleanup([f, o4, o10, g, g4, g10, sum], end + 0.1);
 }
@@ -97,7 +105,7 @@ export function flute(t, freq, dur, { vel = 0.5, bus = 'music', pan = 0, wet = 0
   const air = noise('white', t, dur + 0.4), bp = filter('bandpass', freq * 2, 2.5), airG = gain(0);
   adsr(airG.gain, t, { a: 0.03, d: 0.25, s: 0.3, hold: dur, r: 0.1, peak: 0.04 * vel });
   air.connect(bp); bp.connect(airG); airG.connect(env);
-  out(env, bus, { pan, wet });
+  out(env, dest(bus), { pan, wet });
   [o, o2, vib].forEach((x) => x.stop(end + 0.05));
   cleanup([o, o2, o2g, vib, vibG, env, air, bp, airG], end + 0.1);
 }
@@ -111,7 +119,7 @@ export function pad(t, freqs, dur, { vel = 0.5, bus = 'music', wet = 0.45, cutof
     const o = osc('sawtooth', f, t); o.detune.value = det; o.connect(lp); o.stop(end + 0.05); nodes.push(o);
   }
   lp.connect(sum);
-  out(sum, bus, { wet });
+  out(sum, dest(bus), { wet });
   cleanup([...nodes, lp, sum], end + 0.1);
 }
 
@@ -121,7 +129,7 @@ export function kick(t, { vel = 0.6, bus = 'music' } = {}) {
   const o = osc('sine', 110, t), g = gain(0);
   o.frequency.exponentialRampToValueAtTime(42, t + 0.18);
   const end = adsr(g.gain, t, { a: 0.003, d: 0.28, peak: 0.6 * vel });
-  o.connect(g); out(g, bus, { wet: 0 });
+  o.connect(g); out(g, dest(bus), { wet: 0 });
   o.stop(end + 0.05); cleanup([o, g], end + 0.1);
 }
 
@@ -129,21 +137,21 @@ export function kick(t, { vel = 0.6, bus = 'music' } = {}) {
 export function brush(t, { vel = 0.5, bus = 'music', long = false, pan = 0 } = {}) {
   const n = noise('white', t, long ? 0.6 : 0.3), bp = filter('bandpass', 3200, 0.6), g = gain(0);
   const end = adsr(g.gain, t, { a: long ? 0.06 : 0.004, d: long ? 0.35 : 0.14, peak: 0.12 * vel });
-  n.connect(bp); bp.connect(g); out(g, bus, { pan, wet: 0.12 });
+  n.connect(bp); bp.connect(g); out(g, dest(bus), { pan, wet: 0.12 });
   cleanup([n, bp, g], end + 0.1);
 }
 
 export function shaker(t, { vel = 0.4, bus = 'music', pan = 0.2 } = {}) {
   const n = noise('white', t, 0.12), hp = filter('highpass', 6500), g = gain(0);
   const end = adsr(g.gain, t, { a: 0.012, d: 0.05, peak: 0.08 * vel });
-  n.connect(hp); hp.connect(g); out(g, bus, { pan, wet: 0.05 });
+  n.connect(hp); hp.connect(g); out(g, dest(bus), { pan, wet: 0.05 });
   cleanup([n, hp, g], end + 0.1);
 }
 
 export function rim(t, { vel = 0.4, bus = 'music', pan = -0.15 } = {}) {
   const o = osc('triangle', 1700, t), g = gain(0), bp = filter('bandpass', 1700, 6);
   const end = adsr(g.gain, t, { a: 0.001, d: 0.03, peak: 0.25 * vel });
-  o.connect(bp); bp.connect(g); out(g, bus, { pan, wet: 0.1 });
+  o.connect(bp); bp.connect(g); out(g, dest(bus), { pan, wet: 0.1 });
   o.stop(end + 0.05); cleanup([o, g, bp], end + 0.1);
 }
 

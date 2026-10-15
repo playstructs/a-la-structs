@@ -13,6 +13,7 @@ import { OUTFITS } from '../three/outfits.js';
 import { PROP_IS_STRUCT } from '../three/props.js';
 import { is, isCommand, weaponsOf, possibleAreas, cash, gold, weaponReach } from '../game/model.js';
 import { sfx } from '../audio/sfx.js';
+import { music, SONGS } from '../audio/music.js';
 import { pager, stepper } from './widgets.js';
 
 export function face(app, struct, type, opts = {}) {
@@ -380,6 +381,24 @@ export function settingsSheet(app) {
     return h('div', { class: 'vol-row' }, h('label', { for: id }, label), inp);
   };
   body.push(h('div', { class: 'vol-sliders' }, slider('music', 'Music'), slider('ambience', 'Ambience'), slider('effects', 'Effects')));
+
+  // Which songs play
+  const { mode, song } = music.choice;
+  const now = music.nowPlaying;
+  body.push(h('div', { class: 'section-title' }, 'Music'));
+  body.push(h('div', { class: 'tabs', role: 'radiogroup', 'aria-label': 'Which music plays' }, ...[['scene', 'Fits the scene'], ['shuffle', 'Shuffle all'], ['one', 'One song']].map(([m, label]) =>
+    h('button', { class: `chip-btn ${mode === m ? 'on' : ''}`, role: 'radio', 'aria-checked': mode === m ? 'true' : 'false',
+      onclick: () => app.setMusicChoice({ mode: m, song: m === 'one' ? (song || now?.id || SONGS[0].id) : song }) }, label))));
+  body.push(h('p', { class: 'now-playing' }, now ? ['Now playing: ', h('b', {}, now.title)] : 'Music starts when you first click or tap.',
+    mode === 'shuffle' ? h('button', { class: 'btn small ghost', style: { marginLeft: '8px' }, onclick: () => { music.skip(); app.openSheet('settings'); } }, 'Skip') : null));
+  if (mode === 'one') {
+    body.push(h('div', { class: 'tabs song-list', role: 'radiogroup', 'aria-label': 'Song' }, ...SONGS.map((x) =>
+      h('button', { class: `chip-btn ${song === x.id ? 'on' : ''}`, role: 'radio', 'aria-checked': song === x.id ? 'true' : 'false', onclick: () => app.setMusicChoice({ mode: 'one', song: x.id }) }, x.title))));
+  } else if (mode === 'scene') {
+    body.push(h('p', { class: 'hint' }, 'Each place has its own tune: Rainy Window on the title, Café Bossa in restaurants, Town Square Folk in town, Service Rush in challenges.'));
+  } else {
+    body.push(h('p', { class: 'hint' }, `All ${SONGS.length} songs take turns, a couple of minutes each.`));
+  }
 
   body.push(h('div', { class: 'section-title' }, 'Kitchen glossary'));
   body.push(h('p', {}, 'À la Structs runs on Structs. Your rivals may be playing the original game — here is what everything is called on their side.'));

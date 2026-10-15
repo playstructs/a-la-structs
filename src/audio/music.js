@@ -5,7 +5,7 @@
  * keeps changing. Switching scene crossfades from one piece to the next.
  */
 import { audioCtx, bus, isRunning, midi } from './engine.js';
-import { epiano, bass, pluck, bell, marimba, flute, pad, kick, brush, shaker, rim, gain } from './instruments.js';
+import { epiano, bass, pluck, bell, marimba, flute, pad, kick, brush, shaker, rim, gain, routeMusic } from './instruments.js';
 
 const LOOKAHEAD = 0.3;     // seconds of music scheduled ahead
 const TICK_MS = 60;
@@ -62,31 +62,19 @@ function song(seed, prog, scale, opts) {
 
 /* ── the pieces ───────────────────────────────────────────────────────── */
 
-const C_MAJ = [0, 2, 4, 5, 7, 9, 11];
 const F_MAJ = [5, 7, 9, 10, 0, 2, 4];
 const G_MAJ = [7, 9, 11, 0, 2, 4, 6];
 const A_MIN = [9, 11, 0, 2, 4, 5, 7];
+const EB_MAJ = [3, 5, 7, 8, 10, 0, 2];
+const D_MAJ = [2, 4, 6, 7, 9, 11, 1];
+const BB_MAJ = [10, 0, 2, 3, 5, 7, 9];
+const C_PENTA = [0, 2, 4, 7, 9];
 const ch = (...n) => n;
 
 const PIECES = {
-  /** Start screen: a slow music box over a soft pad. */
-  title: {
-    bpm: 68, swing: 0,
-    prog: [ch(53, 57, 60, 64), ch(52, 55, 59, 62), ch(50, 53, 57, 60), ch(48, 52, 55, 59),
-      ch(53, 57, 60, 64), ch(52, 55, 59, 62), ch(50, 53, 57, 62), ch(55, 59, 62, 65)],
-    scale: C_MAJ, melody: { style: 'calm', lo: 72, hi: 88, rest: 0.25 },
-    step(p, s, t, sp) {
-      const chord = p.chord(s);
-      if (s % 16 === 0) { pad(t, chord.map(midi), sp * 15, { vel: 0.5 }); bass(t, midi(chord[0] - 12), sp * 14, { vel: 0.35 }); }
-      // music-box arpeggio, every eighth
-      if (s % 2 === 0) { const k = (s / 2) % 8, arp = [0, 1, 2, 3, 2, 1, 2, 3][k]; bell(t, midi(chord[arp] + 12), { vel: 0.22, decay: 1.1, pan: 0.25 }); }
-      for (const e of p.notesAt(s)) bell(t, midi(e.note), { vel: 0.55, decay: 2.2, pan: -0.15 });
-    },
-  },
-
   /** Your restaurant: lo-fi café bossa — Rhodes, upright bass, brushes. */
   restaurant: {
-    bpm: 84, swing: 0.16,
+    level: 0.8, bpm: 84, swing: 0.16,
     prog: [ch(55, 58, 62, 65, 69), ch(52, 58, 60, 64, 69), ch(53, 57, 60, 64, 67), ch(50, 53, 57, 60, 64),
       ch(58, 62, 65, 69), ch(57, 60, 64, 67), ch(55, 58, 62, 65), ch(52, 58, 60, 64)],
     bassRoots: [43, 36, 41, 38, 46, 45, 43, 36],
@@ -113,7 +101,7 @@ const PIECES = {
 
   /** Guild town: folksy fingerpicked guitar, a wooden flute, a shaker. */
   town: {
-    bpm: 100, swing: 0.08,
+    level: 1.55, bpm: 100, swing: 0.08,
     prog: [ch(55, 59, 62), ch(50, 54, 57), ch(52, 55, 59), ch(48, 52, 55), ch(55, 59, 62), ch(48, 52, 55), ch(50, 54, 57), ch(55, 59, 62)],
     scale: G_MAJ, melody: { style: 'lilting', lo: 71, hi: 86, rest: 0.2 },
     step(p, s, t, sp) {
@@ -130,7 +118,7 @@ const PIECES = {
 
   /** A service challenge: perky marimba and pizzicato bass, a little tension. */
   challenge: {
-    bpm: 116, swing: 0,
+    level: 1.75, bpm: 116, swing: 0,
     prog: [ch(57, 60, 64), ch(53, 57, 60), ch(55, 59, 62), ch(52, 56, 59, 62), ch(57, 60, 64), ch(50, 53, 57), ch(52, 56, 59), ch(52, 56, 59, 62)],
     scale: A_MIN, melody: { style: 'busy', lo: 69, hi: 84, rest: 0.25 },
     step(p, s, t, sp) {
@@ -143,7 +131,88 @@ const PIECES = {
       for (const e of p.notesAt(s)) bell(t, midi(e.note), { vel: 0.4, decay: 0.7, pan: 0.2, wet: 0.25 });
     },
   },
+
+  /** Lo-fi on a rainy afternoon: lazy Rhodes, a soft boom-bap, a music-box hook. */
+  rainy: {
+    level: 1.0, bpm: 74, swing: 0.2,
+    prog: [ch(51, 55, 58, 62), ch(50, 53, 57, 60), ch(48, 51, 55, 58, 62), ch(46, 50, 53, 57),
+      ch(56, 60, 63, 67), ch(55, 58, 62, 65), ch(53, 56, 60, 63), ch(50, 53, 56, 58)],
+    bassRoots: [39, 38, 36, 34, 44, 43, 41, 46],
+    scale: EB_MAJ, melody: { style: 'calm', lo: 70, hi: 84, rest: 0.3 },
+    step(p, s, t, sp) {
+      const bar = Math.floor(s / 16) % p.prog.length, b = s % 16, chord = p.prog[bar], root = p.def.bassRoots[bar];
+      if (b === 0 || (b === 10 && p.r() < 0.7)) chord.forEach((n, i) => epiano(t + i * 0.018, midi(n), sp * (b === 0 ? 8 : 4), { vel: b === 0 ? 0.3 : 0.22, pan: -0.15 }));
+      if (b === 0) bass(t, midi(root), sp * 6, { vel: 0.6 });
+      if (b === 7 || b === 10) bass(t, midi(root + (b === 7 ? 12 : 7)), sp * 2, { vel: 0.4 });
+      if (b === 0 || b === 10 || (b === 7 && p.r() < 0.4)) kick(t, { vel: 0.45 });
+      if (b === 4 || b === 12) brush(t, { vel: 0.8 });
+      if (b % 2 === 0) shaker(t, { vel: b % 4 === 2 ? 0.4 : 0.2 });
+      for (const e of p.notesAt(s)) bell(t, midi(e.note), { vel: 0.38, decay: 1.4, pan: 0.2, wet: 0.4 });
+    },
+  },
+
+  /** Market morning: a bright ukulele strum, claps of brush, a marimba tune. */
+  market: {
+    level: 1.6, bpm: 112, swing: 0.06,
+    prog: [ch(62, 66, 69), ch(61, 64, 69), ch(59, 62, 66), ch(59, 62, 67), ch(59, 62, 67), ch(62, 66, 69), ch(59, 64, 67), ch(57, 61, 64)],
+    scale: D_MAJ, melody: { style: 'lilting', lo: 74, hi: 88, rest: 0.2 },
+    step(p, s, t, sp) {
+      const chord = p.chord(s), b = s % 16;
+      if ([0, 3, 6, 8, 10, 12, 14].includes(b)) {
+        const down = b % 4 !== 2, v = b === 0 || b === 8 ? 0.5 : 0.32;
+        (down ? chord : [...chord].reverse()).forEach((n, i) => pluck(t + i * 0.014, midi(n), { vel: v, pan: -0.2, decay: 0.45, wet: 0.15 }));
+      }
+      if (b === 0 || b === 8) pluck(t, midi(chord[0] - 24 + (b === 8 ? 7 : 0)), { vel: 0.55, decay: 0.4, wet: 0.05 });
+      if (b === 0 || b === 8) kick(t, { vel: 0.3 });
+      if (b === 4 || b === 12) { brush(t, { vel: 0.6 }); rim(t, { vel: 0.22 }); }
+      if (b % 2 === 1) shaker(t, { vel: 0.3, pan: 0.3 });
+      for (const e of p.notesAt(s)) marimba(t, midi(e.note), { vel: 0.5, pan: 0.2, wet: 0.25 });
+    },
+  },
+
+  /** Jazz brunch: swing, a walking bass, Rhodes stabs on two and four. */
+  brunch: {
+    level: 0.72, bpm: 132, swing: 0.22,
+    prog: [ch(58, 62, 65, 67), ch(55, 59, 62, 65), ch(55, 58, 60, 63), ch(57, 60, 63, 65),
+      ch(57, 60, 62, 65), ch(55, 59, 62, 65), ch(55, 58, 60, 63), ch(57, 60, 63, 65)],
+    walks: [[46, 50, 53, 54], [43, 47, 50, 49], [48, 51, 55, 52], [41, 45, 48, 49], [50, 53, 57, 56], [43, 47, 50, 49], [48, 51, 55, 52], [41, 45, 48, 47]],
+    scale: BB_MAJ, melody: { style: 'lilting', lo: 70, hi: 84, rest: 0.25 },
+    step(p, s, t, sp) {
+      const bar = Math.floor(s / 16) % p.prog.length, b = s % 16, chord = p.prog[bar];
+      if (b % 4 === 0) bass(t, midi(p.def.walks[bar][b / 4]), sp * 3.6, { vel: 0.55 });
+      if (b === 4 || b === 12 || (b === 14 && p.r() < 0.3)) chord.forEach((n, i) => epiano(t + i * 0.006, midi(n), sp * 1.6, { vel: 0.26, pan: -0.2 }));
+      if ([0, 4, 6, 8, 12, 14].includes(b)) shaker(t, { vel: b % 4 === 2 ? 0.25 : 0.5, pan: 0.25 });
+      if (b === 4 || b === 12) brush(t, { vel: 0.4 });
+      for (const e of p.notesAt(s)) bell(t, midi(e.note), { vel: 0.4, decay: 0.8, pan: 0.15, wet: 0.3 });
+    },
+  },
+
+  /** A tea garden: pentatonic marimba ripples and a wooden flute. */
+  teagarden: {
+    level: 1.1, bpm: 92, swing: 0,
+    prog: [ch(48, 55, 62, 64), ch(45, 52, 55, 60), ch(41, 48, 55, 57, 64), ch(43, 50, 55, 60),
+      ch(48, 55, 62, 64), ch(45, 52, 55, 60), ch(43, 50, 55, 62), ch(48, 55, 60, 64)],
+    scale: C_PENTA, melody: { style: 'calm', lo: 72, hi: 86, rest: 0.25 },
+    step(p, s, t, sp) {
+      const chord = p.chord(s), b = s % 16;
+      if (b % 2 === 0) { const notes = chord.slice(1), n = notes[[0, 1, 2, 1, 0, 2, 1, 2][(b / 2) % 8] % notes.length]; marimba(t, midi(n + 12), { vel: 0.3, pan: -0.25 }); }
+      if (b === 0) { bass(t, midi(chord[0]), sp * 12, { vel: 0.4 }); kick(t, { vel: 0.2 }); }
+      if (b % 4 === 2) shaker(t, { vel: 0.25, pan: 0.3 });
+      for (const e of p.notesAt(s)) flute(t, midi(e.note), e.len * sp * 0.92, { vel: 0.5, pan: 0.2, wet: 0.45 });
+    },
+  },
 };
+
+/** Song names for the settings. The first three are the scenes' own; the title screen plays Rainy Window. */
+export const SONGS = [
+  { id: 'restaurant', title: 'Café Bossa' },
+  { id: 'town', title: 'Town Square Folk' },
+  { id: 'challenge', title: 'Service Rush' },
+  { id: 'rainy', title: 'Rainy Window' },
+  { id: 'market', title: 'Market Morning' },
+  { id: 'brunch', title: 'Jazz Brunch' },
+  { id: 'teagarden', title: 'Tea Garden' },
+];
 
 /* ── the player ───────────────────────────────────────────────────────── */
 
@@ -156,7 +225,8 @@ class Player {
     this.prog = this.def.prog;
     this.fader = gain(0);
     this.fader.connect(bus('music'));
-    this.fader.gain.setTargetAtTime(1, audioCtx().currentTime, 0.9);
+    // songs are trimmed to sit at about the same loudness
+    this.fader.gain.setTargetAtTime(this.def.level ?? 1, audioCtx().currentTime, 0.9);
     this.stepDur = 60 / this.def.bpm / 4;
     this.next = audioCtx().currentTime + 0.12;
     this.s = 0;
@@ -164,6 +234,7 @@ class Player {
   }
   /** A fresh 16-bar melody every time the form comes round. */
   compose(fromStep) {
+    this.forms = fromStep ? (this.forms || 0) + 1 : 0;
     const notes = song(this.seed + fromStep, this.prog, this.def.scale, this.def.melody);
     this.byStep = new Map();
     for (const e of notes) { const k = e.step + fromStep; if (!this.byStep.has(k)) this.byStep.set(k, []); this.byStep.get(k).push(e); }
@@ -176,7 +247,9 @@ class Player {
       if (this.s >= this.songEnd) this.compose(this.s);
       // swing the off-beat eighths
       const swing = (this.s % 4 === 2) ? this.def.swing * this.stepDur * 2 : 0;
+      routeMusic(this.fader);
       try { this.def.step(this, this.s, this.next + swing, this.stepDur); } catch (e) { console.warn('[music]', e); }
+      routeMusic(null);
       this.next += this.stepDur; this.s++;
     }
   }
@@ -189,26 +262,74 @@ class Player {
   }
 }
 
-let current = null, fading = [], timer = null, wanted = null;
+/* ── what plays ───────────────────────────────────────────────────────── */
+
+/** Each screen's own song, for 'Fits the scene'. */
+const SCENE_SONG = { title: 'rainy', restaurant: 'restaurant', town: 'town', challenge: 'challenge' };
+const ROTATE_FORMS = 2;     // in shuffle, each song plays its 16-bar form this many times
+let current = null, fading = [], timer = null, scene = null;
+let mode = 'shuffle', chosen = null;   // Shuffle all unless the player picks otherwise
+let queue = [], qi = 0;
+const listeners = new Set();
+
+function shuffled() {
+  const ids = SONGS.map((x) => x.id);
+  for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+  // don't start a new round with the song that just played
+  if (current && ids[0] === current.name && ids.length > 1) [ids[0], ids[1]] = [ids[1], ids[0]];
+  return ids;
+}
+
+/** The song that should be playing now. */
+function target() {
+  if (!scene) return null;
+  if (mode === 'one' && PIECES[chosen]) return chosen;
+  if (mode === 'shuffle') {
+    if (!queue.length) { queue = shuffled(); qi = 0; }
+    return queue[qi];
+  }
+  return SCENE_SONG[scene] || null;
+}
+
+function advance() {
+  qi++;
+  if (qi >= queue.length) { queue = shuffled(); qi = 0; }
+}
 
 function pump() {
   if (!isRunning()) return;
   const c = audioCtx();
-  if (wanted !== (current?.name ?? null)) {
-    if (current) { current.fadeOut(); fading.push(current); }
-    current = wanted && PIECES[wanted] ? new Player(wanted) : null;
+  if (mode === 'shuffle' && current && current.forms >= ROTATE_FORMS) { current.forms = -1e9; advance(); }
+  const want = target();
+  if (want !== (current?.name ?? null)) {
+    if (current) { current.fadeOut(2.5); fading.push(current); }
+    current = want && PIECES[want] ? new Player(want) : null;
+    listeners.forEach((fn) => fn(music.nowPlaying));
   }
   const until = c.currentTime + LOOKAHEAD;
   current?.pump(until);
   fading = fading.filter((p) => { if (c.currentTime < p.stopAt) { p.pump(Math.min(until, p.stopAt)); return true; } return false; });
 }
 
+function ensureTimer() { if (!timer) timer = setInterval(pump, TICK_MS); }
+
 export const music = {
-  /** 'title' | 'restaurant' | 'town' | 'challenge' | null */
-  play(name) {
-    wanted = name;
-    if (!timer) timer = setInterval(pump, TICK_MS);
-    pump();
+  /** The screen we're on: 'title' | 'restaurant' | 'town' | 'challenge' | null. */
+  play(name) { scene = name; ensureTimer(); pump(); },
+  get scene() { return scene; },
+  /**
+   * What the player picked: 'scene' (each screen its own song), 'shuffle'
+   * (every song in turn), or 'one' with a song id that plays everywhere.
+   */
+  setChoice({ mode: m = 'shuffle', song = null } = {}) {
+    mode = ['scene', 'shuffle', 'one'].includes(m) ? m : 'shuffle';
+    chosen = song && PIECES[song] ? song : PIECES[chosen] ? chosen : null;   // a removed song falls back to the scene's
+    if (mode === 'shuffle') { queue = shuffled(); qi = 0; }
+    ensureTimer(); pump();
   },
-  get scene() { return wanted; },
+  get choice() { return { mode, song: chosen }; },
+  /** Shuffle: go to the next song now. */
+  skip() { if (mode !== 'shuffle') return; if (!queue.length) queue = shuffled(); advance(); pump(); },
+  get nowPlaying() { const id = current?.name; return id ? (SONGS.find((x) => x.id === id) || { id, title: id }) : null; },
+  onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
 };

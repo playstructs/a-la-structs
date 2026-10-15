@@ -257,6 +257,8 @@ button { font: inherit; color: inherit; }
 .vol-row { display: grid; grid-template-columns: 6.5em 1fr; align-items: center; gap: 10px; font-weight: 700; color: var(--muted); }
 .vol-row input[type=range] { width: 100%; accent-color: var(--berry); }
 .vol-row input:disabled { opacity: .45; }
+.now-playing { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 6px 0 4px; }
+.sheet .hint { color: var(--muted); font-size: .85rem; margin: 4px 0 0; }
 .mode-card { appearance: none; border: 3px solid var(--line); border-radius: 20px; background: #fff; padding: 14px; text-align: left; cursor: pointer; display: grid; gap: 4px; }
 .mode-card b { font-family: var(--display); font-size: 1.1rem; }
 .mode-card small { color: var(--muted); font-weight: 600; }
