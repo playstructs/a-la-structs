@@ -77,7 +77,11 @@ export class App {
     this.root.append(this.stage, this.ui);
     this.engine = new Engine(this.stage, { quality: this.prefs.quality || 'high' });
     sfx.setEnabled(this.prefs.sound !== false);
-    window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
+    for (const [name, v] of Object.entries(this.prefs.volume || {})) sfx.setVolume(name, v);
+    // Browsers only allow sound after the player does something.
+    const unlock = () => { sfx.unlock(); window.removeEventListener('pointerdown', unlock); window.removeEventListener('keydown', unlock); };
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
     window.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       const pop = [...this.ui.querySelectorAll('.modal-back')].pop();
@@ -107,9 +111,10 @@ export class App {
   titleBackdrop() {
     if (this.view === 'title' && this.previewScene && this.engine.active === this.previewScene) return;
     this.view = 'title';
+    sfx.scene('title');
     const preview = new DemoService({ tickMs: 999999 });
     preview.fresh(); preview.recompute();
-    this.previewScene = new RestaurantScene({ name: BRAND.name, ownerId: 'title' });
+    this.previewScene = new RestaurantScene({ name: BRAND.name, ownerId: 'title', quiet: true });
     this.previewScene.sync([...preview.state.structs.values()], { types: preview.state.types, ownerSpecies: this.prefs.species || 'cat', crewAway: false, jobs: new Map() });
     this.engine.setScene(this.previewScene);
     // A slow orbit, unless the player asked for less motion.
@@ -433,6 +438,7 @@ export class App {
     this.endTargeting();
     this.closeSheet();
     this.view = view;
+    sfx.scene(view);
     document.body.classList.toggle('in-challenge', view === 'challenge');
     this.peekStructs = null;
     this.readOnly = false;
@@ -1311,6 +1317,13 @@ export class App {
     sfx.setEnabled(this.prefs.sound !== false);
     this.savePrefs();
     this.openSheet('settings');
+  }
+
+  /** Music / ambience / effects level, 0..1. */
+  setVolume(name, v) {
+    sfx.setVolume(name, v);
+    this.prefs.volume = { ...(this.prefs.volume || {}), [name]: sfx.volume(name) };
+    this.savePrefs();
   }
 
   modal(iconEl, title, text, buttons) {

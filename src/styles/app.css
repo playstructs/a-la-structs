@@ -253,6 +253,10 @@ button { font: inherit; color: inherit; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .title-menu { display: grid; gap: 10px; margin-top: 4px; }
+.vol-sliders { display: grid; gap: 8px; margin-top: 10px; }
+.vol-row { display: grid; grid-template-columns: 6.5em 1fr; align-items: center; gap: 10px; font-weight: 700; color: var(--muted); }
+.vol-row input[type=range] { width: 100%; accent-color: var(--berry); }
+.vol-row input:disabled { opacity: .45; }
 .mode-card { appearance: none; border: 3px solid var(--line); border-radius: 20px; background: #fff; padding: 14px; text-align: left; cursor: pointer; display: grid; gap: 4px; }
 .mode-card b { font-family: var(--display); font-size: 1.1rem; }
 .mode-card small { color: var(--muted); font-weight: 600; }

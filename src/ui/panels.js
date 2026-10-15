@@ -12,6 +12,7 @@ import { nameProblem } from '../services/Service.js';
 import { OUTFITS } from '../three/outfits.js';
 import { PROP_IS_STRUCT } from '../three/props.js';
 import { is, isCommand, weaponsOf, possibleAreas, cash, gold, weaponReach } from '../game/model.js';
+import { sfx } from '../audio/sfx.js';
 import { pager, stepper } from './widgets.js';
 
 export function face(app, struct, type, opts = {}) {
@@ -372,6 +373,13 @@ export function settingsSheet(app) {
   body.push(h('div', { class: 'section-title' }, 'Graphics & sound'));
   body.push(h('div', { class: 'tabs' }, ...[['high', 'Fancy'], ['medium', 'Balanced'], ['low', 'Speedy']].map(([q, label]) => h('button', { class: `chip-btn ${app.engine.quality === q ? 'on' : ''}`, onclick: () => { app.engine.setQuality(q); app.prefs.quality = q; app.savePrefs(); app.openSheet('settings'); } }, label)),
     h('button', { class: `chip-btn ${app.prefs.sound !== false ? 'on' : ''}`, onclick: () => app.toggleSound() }, icon('sound'), app.prefs.sound !== false ? 'Sound on' : 'Sound off')));
+  const slider = (key, label) => {
+    const id = `vol-${key}`;
+    const inp = h('input', { type: 'range', id, min: '0', max: '100', step: '1', value: String(Math.round(sfx.volume(key) * 100)), disabled: app.prefs.sound === false,
+      oninput: (e) => app.setVolume(key, Number(e.target.value) / 100) });
+    return h('div', { class: 'vol-row' }, h('label', { for: id }, label), inp);
+  };
+  body.push(h('div', { class: 'vol-sliders' }, slider('music', 'Music'), slider('ambience', 'Ambience'), slider('effects', 'Effects')));
 
   body.push(h('div', { class: 'section-title' }, 'Kitchen glossary'));
   body.push(h('p', {}, 'À la Structs runs on Structs. Your rivals may be playing the original game — here is what everything is called on their side.'));

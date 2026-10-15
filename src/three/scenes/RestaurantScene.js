@@ -11,6 +11,7 @@ import { OUTFITS, casualOutfit } from '../outfits.js';
 import { STATION_PROPS, PROP_IS_STRUCT, onboardingBox, managerDesk } from '../props.js';
 import { FX } from '../fx.js';
 import { NavGrid } from '../nav.js';
+import { sfx } from '../../audio/sfx.js';
 import { el, pips } from '../labels.js';
 import { dutyFor } from '../duties.js';
 import { V, STATIONS, COMMAND_SPOT, PLANET_SPOTS, CURB_SPOTS, route, DOOR, randomIn, zoneOf } from '../layout.js';
@@ -382,6 +383,7 @@ export class RestaurantScene extends EventTarget {
       return;
     }
     if (step.gesture) {
+      this.actionSound(a, step);
       if ('hold' in step) c.hold(step.hold);
       if (step.face != null) c.face(step.face);
       if (step.look) c.faceTowards(step.look);
@@ -393,6 +395,33 @@ export class RestaurantScene extends EventTarget {
     if (step.say) { this.say(a, step.say); next(); return; }
     if (step.wait) { this.after(step.wait, next); return; }
     next();
+  }
+
+  /** What a gesture sounds like for this role (sizzle, espresso, chop…), placed where the critter is. */
+  actionSound(a, step) {
+    if (this.opts.quiet || !this.engine || this.engine.active !== this || document.hidden) return;
+    const duty = isCommand(a.type) ? 'manage' : a.role.duty;
+    const g = step.gesture;
+    const kind = {
+      fry: 'sizzle', chop: 'chop', knead: 'knead', scrub: 'scrub', wipe: 'wipe', sweep: 'sweep', type: 'register',
+      write: 'scribble', clap: 'clap', selfie: 'shutter', phone: 'tap', spin: 'whoosh', shake: 'shake', cheer: 'cheer', stir: 'stir',
+      pour: duty === 'barista' ? 'espresso' : 'pour',
+      serve: duty === 'bartend' ? 'glass' : duty === 'host' ? null : 'plate',
+      lift: duty === 'scrub' ? 'clank' : duty === 'fry' ? 'slosh' : 'thud',
+      carry: duty === 'bus' ? 'clank' : 'thud',
+      wave: duty === 'cashier' ? 'till' : null,
+    }[g];
+    if (!kind) return;
+    // Keep the kitchen from clattering: each critter is heard now and then, not every move.
+    if (this.time < (a.nextSoundAt || 0) || Math.random() < 0.35) return;
+    a.nextSoundAt = this.time + 7 + Math.random() * 8;
+    const p = a.character.position;
+    const scr = this.engine.toScreen(tmpV.set(p.x, 1, p.z));
+    const onScreen = !scr.behind && scr.x > -40 && scr.x < this.engine.width + 40 && scr.y > -40 && scr.y < this.engine.height + 40;
+    const dist = this.engine.camera.position.distanceTo(tmpV);
+    const vol = Math.max(0.25, Math.min(1, 1.25 - (dist - 22) / 45)) * (onScreen ? 1 : 0.35);
+    const pan = Math.max(-0.85, Math.min(0.85, (scr.x / (this.engine.width || 1)) * 2 - 1)) * 0.8;
+    sfx.action(kind, { dur: step.dur || 1.5, pan, vol, cup: duty === 'barista' });
   }
 
   /** Interrupt someone's routine to do something now; their routine resumes after. */
