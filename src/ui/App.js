@@ -1103,6 +1103,8 @@ export class App {
     this.engine.setScene(this.townScene);
     if (this.hangout) this.townScene.setPeers([...this.hangout.peers.values()]);
     this.renderTownUi(g);
+    // Guild chat lives in the town: sign in to it the first time you come here.
+    this.startMatrixChat();
   }
 
   renderTownUi(g) {
@@ -1120,11 +1122,20 @@ export class App {
     this.chatLog = log;
     const past = this.matrix?.live ? this.matrix.history : (this.hangout?.history || []);
     for (const m of past) this.appendChat(m);
+    if (!this.matrix?.live && this.chatNoteText) this.chatLog.appendChild(h('div', { class: 'msg sys' }, this.chatNoteText));
     this.updateChatTitle();
     this.overlay.append(
       h('div', { class: 'town-hint' }, h('kbd', {}, 'WASD'), ' or click to walk · ', h('kbd', {}, 'E'), ' to peek inside · ', h('kbd', {}, 'Space'), ' to wave'),
       chat);
     this.updateOnline();
+  }
+
+  /** A quiet line in the town chat (never a pop-up over the restaurant). */
+  chatNote(text) {
+    this.chatNoteText = text;
+    if (!this.chatLog) return;
+    this.chatLog.appendChild(h('div', { class: 'msg sys' }, text));
+    this.chatLog.scrollTop = this.chatLog.scrollHeight;
   }
 
   appendChat(m) {
@@ -1155,7 +1166,7 @@ export class App {
 
   /** Live only: sign in to the guild's Matrix chat; the town square keeps presence. */
   async startMatrixChat() {
-    if (this.svc?.mode !== 'live' || this.matrix || this.matrixStarting) return;
+    if (this.svc?.mode !== 'live' || this.matrix || this.matrixStarting || Date.now() < (this.matrixRetryAt || 0)) return;
     this.matrixStarting = true;
     const s = this.svc.state;
     try {
@@ -1164,17 +1175,19 @@ export class App {
       chat.addEventListener('chat', (e) => { this.appendChat(e.detail); this.townScene?.chat(e.detail); if (this.view === 'town' && e.detail.from !== s.me.id) sfx.chat(); });
       chat.addEventListener('status', (e) => {
         this.updateChatTitle();
-        if (e.detail.ended) { this.announce({ text: e.detail.message, tone: 'bad' }); this.matrix = null; }
+        if (e.detail.ended) { this.chatNote(e.detail.message); this.matrix = null; }
       });
-      chat.addEventListener('error', (e) => this.announce({ text: e.detail.message, tone: 'bad' }));
+      chat.addEventListener('error', (e) => this.chatNote(e.detail.message));
       await chat.start();
       this.matrix = chat;
       // Replace the square's local chat with the room's history.
       if (this.chatLog) { clear(this.chatLog); for (const m of chat.history) this.appendChat(m); }
+      this.chatNoteText = null;
       this.updateChatTitle();
     } catch (e) {
       console.warn('[chat]', e);
-      this.announce({ text: `Guild chat isn’t available: ${e.message || e}. Using the town square instead.`, tone: 'info' });
+      this.matrixRetryAt = Date.now() + 5 * 60000;   // try again on a later visit, not every time
+      this.chatNote(`Guild chat isn’t available (${e.message || e}), so you’re chatting in the town square.`);
     } finally { this.matrixStarting = false; }
   }
 
@@ -1193,7 +1206,6 @@ export class App {
       if (this.townScene) this.townScene.hangout = this.hangout;
     };
     make();
-    this.startMatrixChat();
   }
 
   /* ── misc ─────────────────────────────────────────────────────────────── */

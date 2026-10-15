@@ -120,7 +120,11 @@ them on sign-out. Tokens live only in memory.
 
 The homeserver comes from the guild config (`services.matrix_homeserver`) or
 the user id's `.well-known/matrix/client`; the room from
-`services.matrix_room`, or the busiest non-DM room the account is in.
+`services.matrix_room`; otherwise the room used last time, the most guild-like
+room the account is in, an invitation from the guild's server, or the most
+guild-like room in the server's public directory (looking inside a space if
+that's all it lists), which it joins. Chat signs in the first time you visit
+the town, and any problem shows as a note in the town chat, not a pop-up.
 `VITE_MATRIX_HOMESERVER` / `VITE_MATRIX_ROOM` override both. If the guild has
 no `/auth/matrix`, chat falls back to the town square below.
 

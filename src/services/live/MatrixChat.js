@@ -156,38 +156,78 @@ export class MatrixChat extends EventTarget {
     return this;
   }
 
-  async joinAlias(alias) {
-    const r = await this.call(`/join/${encodeURIComponent(alias)}`, { method: 'POST', json: {} });
-    return r.ok ? r.data.room_id : null;
-  }
-
-  /** The guild's room: the configured one, or the best of the rooms we're already in. */
+  /**
+   * The guild's room, in order of preference: the configured one; the one we
+   * used last time; the best room we're already in; a room on the guild's
+   * server we've been invited to; the most guild-like room in the server's
+   * public directory (looking inside a space if that's all it lists).
+   */
   async pickRoom() {
+    const join = async (id) => { const r = await this.call(`/join/${encodeURIComponent(id)}`, { method: 'POST', json: {} }); return r.ok ? r.data.room_id : null; };
+    const remember = (id) => { try { localStorage.setItem(this.roomKey(), id); } catch (e) { /* storage off */ } };
     if (this.roomHint) {
-      const id = this.roomHint.startsWith('!') ? this.roomHint : await this.joinAlias(this.roomHint);
+      const id = this.roomHint.startsWith('!') ? this.roomHint : await join(this.roomHint);
       if (id) { this.roomId = id; return; }
     }
     const first = await this.sync(null, 0);
-    const rooms = Object.entries(first.data?.rooms?.join || {});
-    if (!rooms.length) throw new Error('Your chat account isn’t in any guild rooms yet');
-    const gname = (this.guild.name || '').toLowerCase();
-    const gid = String(this.guild.id || '');
-    const score = ([, r]) => {
-      const st = r.state?.events || [];
-      const name = (st.find((e) => e.type === 'm.room.name')?.content?.name || '').toLowerCase();
-      const alias = (st.find((e) => e.type === 'm.room.canonical_alias')?.content?.alias || '').toLowerCase();
-      const members = Number(r.summary?.['m.joined_member_count'] || 0);
-      let s = members;
-      if (gname && (name.includes(gname) || alias.includes(gname.replace(/\s+/g, '')))) s += 1000;
-      if (gid && (name.includes(gid) || alias.includes(gid))) s += 800;
-      if (/general|lobby|guild|town|chat/.test(name + alias)) s += 200;
-      if (members <= 2) s -= 500; // direct messages
-      return s;
+    const joined = Object.entries(first.data?.rooms?.join || {});
+    let last = null;
+    try { last = localStorage.getItem(this.roomKey()); } catch (e) { /* storage off */ }
+    if (last && joined.some(([id]) => id === last)) return this.useRoom(last, first.data);
+    const best = joined.filter(([, r]) => this.score(this.describe(r)) > -100).sort((a, b) => this.score(this.describe(b[1])) - this.score(this.describe(a[1])))[0];
+    if (best) { remember(best[0]); return this.useRoom(best[0], first.data); }
+
+    // Not in a guild room yet: accept an invitation from the guild's own server…
+    const server = this.userId.split(':').slice(1).join(':');
+    const invites = Object.keys(first.data?.rooms?.invite || {}).filter((id) => id.endsWith(`:${server}`));
+    for (const id of invites) { const ok = await join(id); if (ok) { remember(ok); return this.useRoom(ok); } }
+
+    // …or join the most guild-like public room on it.
+    const dir = await this.call('/publicRooms?limit=100');
+    const listed = (dir.ok && dir.data?.chunk) || [];
+    let candidates = listed.filter((r) => r.room_type !== 'm.space' && r.join_rule !== 'knock');
+    if (!candidates.length) {
+      for (const space of listed.filter((r) => r.room_type === 'm.space')) {
+        const h = await this.call(`/rooms/${encodeURIComponent(space.room_id)}/hierarchy?limit=50`);
+        candidates.push(...((h.ok && h.data?.rooms) || []).filter((r) => r.room_type !== 'm.space' && (r.join_rule === 'public' || r.world_readable)));
+      }
+    }
+    candidates = candidates.map((r) => ({ id: r.room_id, alias: r.canonical_alias, d: { name: r.name || '', alias: r.canonical_alias || '', members: Number(r.num_joined_members || 0) } }))
+      .sort((a, b) => this.score(b.d) - this.score(a.d));
+    for (const c of candidates.slice(0, 3)) {
+      const ok = await join(c.alias || c.id);
+      if (ok) { remember(ok); return this.useRoom(ok); }
+    }
+    throw new Error(listed.length ? 'Couldn’t join any of the guild’s chat rooms' : 'The guild hasn’t opened a public chat room yet');
+  }
+
+  roomKey() { return `aLaStructs.matrix.room.v1:${this.hs}:${this.userId}`; }
+
+  /** Name, alias and size of a room from a /sync entry. */
+  describe(r) {
+    const st = r.state?.events || [];
+    return {
+      name: st.find((e) => e.type === 'm.room.name')?.content?.name || '',
+      alias: st.find((e) => e.type === 'm.room.canonical_alias')?.content?.alias || '',
+      members: Number(r.summary?.['m.joined_member_count'] || 0),
     };
-    rooms.sort((a, b) => score(b) - score(a));
-    this.roomId = rooms[0][0];
-    this.ingest(first.data);
-    this.since = first.data?.next_batch;
+  }
+
+  /** How much a room looks like the guild's main chat. Direct messages score below -100. */
+  score({ name, alias, members }) {
+    const text = `${name} ${alias}`.toLowerCase();
+    const gname = (this.guild.name || '').toLowerCase(), gid = String(this.guild.id || '');
+    let s = Math.min(members, 500);
+    if (gname && (text.includes(gname) || text.includes(gname.replace(/\s+/g, '')))) s += 1000;
+    if (gid && text.includes(gid)) s += 800;
+    if (/general|lobby|guild|town|chat|main|welcome/.test(text)) s += 200;
+    if (members && members <= 2 && !name && !alias) s -= 500;
+    return s;
+  }
+
+  useRoom(id, syncData = null) {
+    this.roomId = id;
+    if (syncData) { this.ingest(syncData); this.since = syncData.next_batch; }
   }
 
   filter() {
