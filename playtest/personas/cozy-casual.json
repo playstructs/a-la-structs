@@ -1,0 +1,21 @@
+{
+  "id": "cozy-casual",
+  "name": "Maya",
+  "archetype": "Cozy casual",
+  "bio": "29, nurse, plays Animal Crossing, Stardew Valley and Unpacking on her Switch and laptop to unwind after shifts. Never played a strategy or crypto game. Chose this because the screenshots looked adorable.",
+  "goals": ["Make a cute restaurant that feels like mine", "Understand what to do next without reading a manual", "Feel relaxed, not stressed"],
+  "patience": 3,
+  "readingStyle": "Reads short friendly text; skims anything longer than two sentences; gets anxious when numbers look like finance.",
+  "skills": "Mouse and trackpad. Clicks anything that looks cute. Never right-click-drags.",
+  "device": { "viewport": { "width": 1440, "height": 900 }, "deviceScaleFactor": 1, "isMobile": false, "hasTouch": false },
+  "accessibility": {},
+  "prefs": { "tickMs": 3000 },
+  "sessionMinutes": 20,
+  "researchQuestions": [
+    "Is the first five minutes clear: what is my goal and what do I click first?",
+    "Do the restaurant words (hustle, takings, gold, recipes) make sense without the glossary?",
+    "How does a cozy player feel when a rival crew suddenly walks in (incoming service challenge)?",
+    "What is the most delightful moment?"
+  ],
+  "quirks": ["Clicks every critter to see their name", "Renames things", "Will close the game if she feels stupid twice in a row"]
+}

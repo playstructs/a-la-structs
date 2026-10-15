@@ -1,0 +1,21 @@
+{
+  "id": "optimizer",
+  "name": "Tess",
+  "archetype": "Optimizer / min-maxer",
+  "bio": "22, economics student, plays Factorio, Cookie Clicker and Hearts of Iron. Opens a spreadsheet for every game. Wants to find the dominant strategy within 20 minutes.",
+  "goals": ["Work out the economy: what makes gold and cash grow fastest", "Find the bottleneck and the best investment", "Push the clock to the fastest speed and break the curve"],
+  "patience": 4,
+  "readingStyle": "Reads numbers carefully, ignores flavour text. Compares stats across the hiring catalogue.",
+  "skills": "Expert. Uses Settings to speed up time. Will invest gold, hire repeatedly, try open a new restaurant.",
+  "device": { "viewport": { "width": 1440, "height": 900 }, "deviceScaleFactor": 1, "isMobile": false, "hasTouch": false },
+  "accessibility": {},
+  "prefs": { "tickMs": 3000 },
+  "sessionMinutes": 25,
+  "researchQuestions": [
+    "Is there enough information on screen to make economic decisions (rates, costs, payback)?",
+    "Is there a clear progression goal and a sense of growth?",
+    "Where does the economy stall or feel pointless?",
+    "Are there exploits or dominant strategies?"
+  ],
+  "quirks": ["Writes down numbers each minute", "Hires the most expensive things first", "Gets bored by waiting"]
+}

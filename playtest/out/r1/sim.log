@@ -1,0 +1,27 @@
+............................................................
+60 sessions × 900 ticks in 21.2s
+396 matrix challenges in 31.8s
+afk        gold   46  bank   60  staff 10.1  1st gold @8t  stall @175t  challenges 50 won 2  toasts/min 0.8  errors 0
+cozy       gold    6  bank  100  staff 15.1  1st gold @8t  stall @180t  challenges 48 won 30  toasts/min 2.2  errors 0
+economist  gold    0  bank   60  staff 11.6  1st gold @8t  stall @900t  challenges 50 won 40  toasts/min 2.7  errors 0
+raider     gold   52  bank   60  staff 4.0  1st gold @8t  stall @277t  challenges 66 won 26  toasts/min 1.9  errors 8362
+tactician  gold    3  bank   60  staff 6.1  1st gold @8t  stall @344t  challenges 70 won 45  toasts/min 2.0  errors 7928
+challenger/easy/idle         win 100%  avg 35 ticks  raidSuccessful:22
+defender/easy/idle           win   0%  avg 42 ticks  raidSuccessful:22
+challenger/easy/naive        win  77%  avg 32 ticks  raidSuccessful:17 attackerDefeated:5
+defender/easy/naive          win  68%  avg 32 ticks  attackerDefeated:15 raidSuccessful:7
+challenger/easy/focus        win  73%  avg 32 ticks  raidSuccessful:16 attackerDefeated:6
+defender/easy/focus          win  91%  avg 22 ticks  attackerDefeated:20 raidSuccessful:2
+challenger/difficult/idle    win  82%  avg 35 ticks  attackerDefeated:4 raidSuccessful:18
+defender/difficult/idle      win   0%  avg 42 ticks  raidSuccessful:22
+challenger/difficult/naive   win  50%  avg 28 ticks  attackerDefeated:11 raidSuccessful:11
+defender/difficult/naive     win  55%  avg 38 ticks  attackerDefeated:12 raidSuccessful:10
+challenger/difficult/focus   win  59%  avg 28 ticks  attackerDefeated:9 raidSuccessful:13
+defender/difficult/focus     win  77%  avg 33 ticks  attackerDefeated:17 raidSuccessful:5
+challenger/hard/idle         win  73%  avg 30 ticks  attackerDefeated:6 raidSuccessful:16
+defender/hard/idle           win  27%  avg 41 ticks  raidSuccessful:16 attackerDefeated:6
+challenger/hard/naive        win  50%  avg 28 ticks  attackerDefeated:11 raidSuccessful:11
+defender/hard/naive          win  55%  avg 37 ticks  attackerDefeated:12 raidSuccessful:10
+challenger/hard/focus        win  41%  avg 26 ticks  attackerDefeated:13 raidSuccessful:9
+defender/hard/focus          win  95%  avg 31 ticks  attackerDefeated:21 raidSuccessful:1
+wrote playtest/out/r1/sim.json

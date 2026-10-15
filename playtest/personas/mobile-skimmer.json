@@ -1,0 +1,21 @@
+{
+  "id": "mobile-skimmer",
+  "name": "Leo",
+  "archetype": "Mobile commuter, impatient",
+  "bio": "24, retail worker, plays mobile games on the bus in 5-minute bursts (Clash Royale, Pokemon GO, idle games). Saw a link on Discord and opened it on his phone.",
+  "goals": ["Get to something fun within a minute", "Play with one thumb", "Battle someone"],
+  "patience": 1,
+  "readingStyle": "Does not read. Taps the biggest button. Abandons if stuck for 30 seconds.",
+  "skills": "Touch only. Taps, never long-presses. Portrait phone.",
+  "device": { "viewport": { "width": 390, "height": 844 }, "deviceScaleFactor": 3, "isMobile": true, "hasTouch": true },
+  "accessibility": {},
+  "prefs": { "tickMs": 3000 },
+  "sessionMinutes": 12,
+  "researchQuestions": [
+    "Does the game work and fit on a phone in portrait?",
+    "Can you reach a service challenge quickly and understand how to win it by tapping?",
+    "Are tap targets big enough and is anything cut off or overlapping?",
+    "At what moment would he quit?"
+  ],
+  "quirks": ["Taps quickly, sometimes twice", "Ignores popups' text and taps the button", "Goes straight for anything battle-like"]
+}

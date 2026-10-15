@@ -1,0 +1,21 @@
+{
+  "id": "structs-veteran",
+  "name": "Raj",
+  "archetype": "Structs veteran",
+  "bio": "34, backend engineer, has played Structs on testnet for a year, runs a small guild. Knows raids, ambits, charge, PDC and stealth bombers by heart. Curious whether this skin can win over his non-gamer partner, and suspicious it hides depth.",
+  "goals": ["Map every restaurant concept back to Structs and check it is faithful", "Run a raid (service challenge) and win it", "Find where the skin lies or oversimplifies"],
+  "patience": 4,
+  "readingStyle": "Reads everything, including tooltips and the glossary. Notices numbers that do not add up.",
+  "skills": "Expert mouse/keyboard, hovers for tooltips, checks Settings early.",
+  "device": { "viewport": { "width": 1680, "height": 1050 }, "deviceScaleFactor": 1, "isMobile": false, "hasTouch": false },
+  "accessibility": {},
+  "prefs": { "tickMs": 3000 },
+  "sessionMinutes": 25,
+  "researchQuestions": [
+    "Is the mapping consistent everywhere (HUD, sheets, logs, glossary)?",
+    "Can an expert execute a deliberate raid strategy (ambit targeting, covers, stealth) through this UI?",
+    "Is anything missing that a Structs player would expect (fleet movement, charge visibility, raid timer)?",
+    "Would he recommend it to his non-gamer partner?"
+  ],
+  "quirks": ["Says 'so this is the PDC' out loud", "Tests the Manager move between areas", "Tries a raid against the strongest rival"]
+}

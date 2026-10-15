@@ -4,3 +4,7 @@ dist-artifact/
 .env
 .env.local
 .stage/
+playtest/out/*/*/shots/
+playtest/out/*/*/seat.json
+playtest/out/*/*/daemon.log
+playtest/.build/
