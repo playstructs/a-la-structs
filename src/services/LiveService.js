@@ -13,7 +13,8 @@
  */
 import './live/polyfills.js';
 import { makeNoop } from './live/noop.js';
-import { Service } from './Service.js';
+import { Service, nameProblem, describeBrowser, PAGE_SIZE } from './Service.js';
+import { forgetSession } from './session.js';
 import { TypeCatalog, normalizeStruct, is, isCommand, weaponField, hasWeapon, STATUS } from '../game/model.js';
 import { roleOf } from '../lexicon/roles.js';
 import { nameFor, speciesFor, restaurantNameFor } from '../lexicon/names.js';
@@ -41,6 +42,10 @@ import { DestroyedStructManager } from '../../vendor/structs-webapp/js/managers/
 import { AnimationEventQueue } from '../../vendor/structs-webapp/js/data_structures/AnimationEventQueue.js';
 import { PlanetRaidFactory } from '../../vendor/structs-webapp/js/factories/PlanetRaidFactory.js';
 import { RaidSearchRequestDTO } from '../../vendor/structs-webapp/js/dtos/RaidSearchRequestDTO.js';
+import { CreateActivationCodeRequestDTO } from '../../vendor/structs-webapp/js/dtos/CreateActivationCodeRequestDTO.js';
+import { SetAddressPermissionsRequestDTO } from '../../vendor/structs-webapp/js/dtos/SetAddressPermissionsRequestDTO.js';
+import { TransferSearchRequestDTO } from '../../vendor/structs-webapp/js/dtos/TransferSearchRequestDTO.js';
+import { PERMISSIONS } from '../../vendor/structs-webapp/js/constants/Permissions.js';
 import { EVENTS } from '../../vendor/structs-webapp/js/constants/Events.js';
 import { TASK } from '../../vendor/structs-webapp/js/constants/TaskConstants.js';
 import { TASK_TYPES } from '../../vendor/structs-webapp/js/constants/TaskTypes.js';
@@ -139,11 +144,21 @@ export class LiveService extends Service {
     scm.wsUrl = this.endpoints.rpc;
     scm.queue.wsUrl = this.endpoints.rpc;
     globalThis.signingClientManager = scm;
+    // The queue already saves itself (per signing address) and replays after a
+    // reload. It gives up on the first failure, though, so give orders that
+    // failed for a passing reason — a dropped socket, a busy node, a sequence
+    // race between two tabs — another couple of tries. Rule failures (not
+    // enough hustle, out of reach…) still fail at once.
+    scm.queue.canRetry = (tx) => {
+      const again = tx.attempts < 1 + ORDER_RETRIES && isTransient(tx.error);
+      if (again) this.toast('An order didn’t reach the guild — trying again…', 'info');
+      return again;
+    };
 
     const structManager = this.structManager = new StructManager(gameState, guildAPI, scm);
     const planetManager = this.planetManager = new PlanetManager(gameState, scm, guildAPI);
     const playerAddressManager = this.playerAddressManager = new PlayerAddressManager(gameState, guildAPI);
-    const permissionManager = new PermissionManager();
+    const permissionManager = this.permissionManager = new PermissionManager();
     const mapManager = this.mapManager = makeNoop('MapManager');
     const raidManager = this.raidManager = new RaidManager(gameState, guildAPI, this.grass, mapManager, structManager);
     const taskManager = this.taskManager = new TaskManager(gameState, guildAPI, scm, new TaskStateFactory());
@@ -205,6 +220,7 @@ export class LiveService extends Service {
     setInterval(() => {
       this.grass.resumeCheck(); this.blockGrass.resumeCheck(); this.signing.resumeCheck(false).then();
     }, 30000);
+    this.watchForResume();
     setTimeout(() => window.dispatchEvent(new CustomEvent(EVENTS.TASK_CMD_MANAGER_RESUME)), TASK.START_DELAY);
     const pid = gs.keyPlayers[P.PLAYER].id;
     if (pid && gs.mnemonic) {
@@ -289,13 +305,95 @@ export class LiveService extends Service {
     }
   }
 
+  /**
+   * A tab that slept or went offline can come back with sockets that look open
+   * but carry nothing. Re-check the event stream and the signing connection
+   * whenever the page comes back (structs-webapp index.js does the same).
+   */
+  watchForResume() {
+    if (this.resumeWired) return;
+    this.resumeWired = true;
+    const resume = () => {
+      this.grass.resumeCheck(); this.blockGrass.resumeCheck();
+      if (this.gs.wallet) this.signing.resumeCheck(true).then();
+    };
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resume(); });
+    window.addEventListener('pageshow', (e) => { if (e.persisted) resume(); });
+    window.addEventListener('online', () => { resume(); this.toast('Back online — reconnecting to the guild.', 'info'); });
+    window.addEventListener('offline', () => this.toast('You’re offline. Orders wait until you’re back.', 'bad'));
+    window.addEventListener('focus', () => resume());
+  }
+
   async afterLogin() {
+    this.watchKeyRevoked();
     this.pull();
     this.state.ready = true;
     this.emit(['all']);
   }
 
-  logout() { try { localStorage.removeItem('gameState'); } catch (e) { /* ignore */ } location.reload(); }
+  logout() { forgetSession(); location.reload(); }
+
+  /** If another device takes back this browser's key, sign out here too. */
+  watchKeyRevoked() {
+    const gid = this.gs.thisGuild?.id, me = this.myAddress();
+    if (!gid || !me || this.revokeWatched) return;
+    this.revokeWatched = true;
+    this.grass.registerListener({
+      name: 'A_LA_STRUCTS_KEY_REVOKED', shouldUnregister: () => false,
+      handler: (m) => {
+        if (m.category === 'player_address' && m.status === 'revoked' && m.address === me && m.subject === `structs.player.${gid}.${this.state.me.id}`) {
+          this.dispatchEvent(new CustomEvent('revoked'));
+        }
+      },
+    });
+  }
+
+  /* ── signing in with a key code (a device someone already signed in approves this one) ── */
+
+  async lookupKeyCode(code) {
+    code = String(code || '').trim();
+    if (!code) throw new Error('Type the key code shown on your other device.');
+    const info = await this.api.getActivationCodeInfo(encodeURIComponent(code)).catch(() => null);
+    if (!info?.player_id) throw new Error('That key code doesn’t match a restaurant in this group. Check it — codes only work for a little while.');
+    return { code, playerId: String(info.player_id), name: info.username || `Owner ${info.player_id}`, tag: info.tag || '', species: speciesFor(String(info.player_id), 'owner'), raw: info };
+  }
+
+  /**
+   * Ask for a key: this browser makes a fresh device key and the guild shows
+   * the request on the owner's other device. Resolves to { address, approved },
+   * where `approved` settles once that device says yes (cancellable).
+   */
+  async requestKey(owner) {
+    const gs = this.gs;
+    const ok = await this.auth.addNewDevice(owner.raw);
+    if (!ok) throw new Error('The guild didn’t take the request. The code may have expired — make a new one.');
+    const gid = gs.thisGuild.id, addr = gs.signingAccount.address;
+    const frame = this.waitForFrame(`A_LA_STRUCTS_KEY_GRANTED`,
+      (m) => m.category === 'player_address' && m.subject === `structs.player.${gid}.${owner.playerId}` && m.status === 'approved' && m.address === addr);
+    // GRASS can miss it, so also ask the chain now and then.
+    let polling = true;
+    const poll = (async () => {
+      while (polling) {
+        await new Promise((r) => setTimeout(r, 5000));
+        if (polling && (await playerIdForAddress(addr, this.guild?.reactor).catch(() => null)) === owner.playerId) return true;
+      }
+      return new Promise(() => {});
+    })();
+    const approved = Promise.race([frame, poll]).finally(() => { polling = false; frame.cancel(); });
+    approved.cancel = () => { polling = false; frame.cancel(); };
+    return { address: addr, approved };
+  }
+
+  /** The other device said yes: sign in as that owner with this browser's new key. */
+  async completeKeySignIn(owner) {
+    const gs = this.gs;
+    const done = new Promise((resolve) => window.addEventListener(EVENTS.LOGIN_COMPLETE, resolve, { once: true }));
+    const ok = await this.auth.login(owner.playerId);
+    if (!ok) throw new Error('The guild didn’t let this key in. Try again from your other device.');
+    await Promise.race([done, this.waitFor(() => gs.keyPlayers[P.PLAYER].planet, 180000)]);
+    gs.save();
+    await this.afterLogin();
+  }
 
   /* ── reading the core's game state ────────────────────────────────────── */
 
@@ -383,7 +481,9 @@ export class LiveService extends Service {
       if (s.challenge && s.challenge.status === 'ongoing') {
         const st = this.lastRaidStatus || 'attackerRetreated';
         s.challenge.status = st;
-        s.challenge.result = { status: st, text: this.resultText(st, s.challenge.role), tone: this.resultTone(st, s.challenge.role) };
+        const stolen = st === 'raidSuccessful' ? (this.lastSeized || 0) : 0;
+        s.challenge.result = { status: st, stolen, text: this.resultText(st, s.challenge.role, stolen), tone: this.resultTone(st, s.challenge.role) };
+        this.lastSeized = 0;
         this.fx({ kind: 'challengeEnd', status: st, role: s.challenge.role });
         this.toast(s.challenge.result.text, s.challenge.result.tone);
       }
@@ -412,10 +512,11 @@ export class LiveService extends Service {
     this.lastRaidStatus = info.status;
   }
 
-  resultText(st, role) {
+  resultText(st, role, stolen = 0) {
     const guest = role === 'challenger';
+    const n = `${stolen} recipe${stolen === 1 ? '' : 's'}`;
     switch (st) {
-      case 'raidSuccessful': return guest ? 'You copied their recipes!' : 'Their crew copied some of your recipes.';
+      case 'raidSuccessful': return guest ? (stolen ? `You copied ${n}!` : 'You stayed the whole service, but there were no recipes to copy.') : (stolen ? `Their crew copied ${n} from you.` : 'Their crew stayed the whole service, but found no recipes to copy.');
       case 'attackerDefeated': return guest ? 'Your Food Critic was satisfied and the party went home.' : 'You satisfied their Food Critic — the party went home. Recipes safe!';
       case 'demilitarized': return 'The restaurant closed for good — everyone went home.';
       default: return guest ? 'Your crew headed home.' : 'The visiting crew left.';
@@ -457,6 +558,7 @@ export class LiveService extends Service {
       }
       case 'raid_status':
         this.lastRaidStatus = msg.detail?.status || msg.status || this.lastRaidStatus;
+        if (msg.detail?.seized_ore != null) this.lastSeized = Number(msg.detail.seized_ore) || 0;
         break;
       case 'ore':
         if (msg.subject?.endsWith(`.${this.state.me.id}`)) this.fx({ kind: 'job', job: 'mine' });
@@ -599,19 +701,34 @@ export class LiveService extends Service {
     };
   }
 
-  async findRivals(query = '') {
+  async findRivals(query = '') { return (await this.searchRivals({ query })).list; }
+
+  /**
+   * The webapp's Scan: { query, minRecipes, groupId, crewOut, notBusy, page }
+   * → { list, total, pages }.
+   */
+  async searchRivals({ query = '', minRecipes = 0, groupId = null, crewOut = false, notBusy = false, page = 1 } = {}) {
     const dto = new RaidSearchRequestDTO();
-    dto.search_string = query || null;
-    dto.min_ore = 0;
-    dto.page = 1;
-    const list = await this.api.raidSearch(dto);
-    return list.filter((p) => p.id !== this.state.me.id).map((p) => ({
+    dto.search_string = query ? encodeURIComponent(query) : null;
+    dto.guild_id = groupId || null;
+    dto.min_ore = Math.max(0, Math.floor(Number(minRecipes) || 0));
+    dto.fleet_away_only = crewOut ? 1 : 0;
+    dto.not_under_attack = notBusy ? 1 : 0;
+    dto.page = page;
+    const [list, total] = await Promise.all([this.api.raidSearch(dto), this.api.raidSearchCount(dto).catch(() => null)]);
+    const rows = list.filter((p) => p.id !== this.state.me.id).map((p) => this.rivalRow(p));
+    const count = total ?? list.length;
+    return { list: rows, total: count, pages: Math.max(1, Math.ceil(count / PAGE_SIZE)), page };
+  }
+
+  rivalRow(p) {
+    return {
       id: p.id, name: p.username || `Owner ${p.id}`, species: speciesFor(p.id, 'owner'),
       restaurantName: p.planet_id ? restaurantNameFor(p.planet_id, p.username) : '—',
       guildName: p.guild_name || '', guildTag: p.tag || '', recipes: Number(p.ore || 0), gold: Number(p.alpha || 0),
-      undiscovered: Number(p.undiscovered_ore || 0), crewHome: p.fleet_status === 'onStation',
-      underChallenge: !!p.under_attack, planetId: p.planet_id, staff: null,
-    }));
+      undiscovered: Number(p.undiscovered_ore || 0), crewHome: p.fleet_status !== 'away',
+      underChallenge: Number(p.under_attack) === 1, planetId: p.planet_id, staff: null,
+    };
   }
 
   async startChallenge(rivalId, rival) {
@@ -637,4 +754,299 @@ export class LiveService extends Service {
   dismissChallenge() {
     if (this.state.challenge && this.state.challenge.status !== 'ongoing') { this.state.challenge = null; this.emit(['challenge']); }
   }
+
+  /* ── the office: owner card, keys, gold ───────────────────────────────── */
+
+  myAddress() { return this.gs.signingAccount?.address || null; }
+
+  async getProfile(playerId = this.state.me.id) {
+    const isMe = playerId === this.state.me.id;
+    const api = this.api;
+    const soft = (p) => p.catch(() => null);
+    const [player, infusion, ore, completed, launched] = await Promise.all([
+      isMe ? this.gs.keyPlayers[P.PLAYER].player : api.getPlayer(playerId),
+      soft(api.getInfusionByPlayerId(playerId)), soft(api.getPlayerOreStats(playerId, true)),
+      soft(api.getPlayerPlanetsCompleted(playerId, true)), soft(api.getPlayerRaidsLaunched(playerId, true)),
+    ]);
+    if (!player) throw new Error('Couldn’t find that owner.');
+    const num = (x) => (x == null || Number.isNaN(Number(x)) ? null : Number(x));
+    return {
+      id: playerId, isMe, name: player.username || `Owner ${playerId}`, address: player.primary_address,
+      species: isMe ? this.state.me.species : speciesFor(playerId, 'owner'),
+      guildId: player.guild_id, guildName: player.guild_name || (isMe ? this.state.me.guildName : ''), guildTag: player.tag || '',
+      restaurantName: player.planet_id ? (isMe ? this.state.restaurant.name : restaurantNameFor(player.planet_id, player.username)) : null,
+      gold: Number(player.alpha || 0), invested: Number(infusion?.fuel || 0),
+      takings: Number(player.capacity || 0) + Number(player.connection_capacity || 0),
+      payroll: Number(player.load || 0) + Number(player.structs_load || 0),
+      restaurantsCompleted: num(completed), challengesLaunched: num(launched),
+      recipesFound: num(ore?.mined), recipesCopied: num(ore?.seized), recipesLost: num(ore?.forfeited),
+    };
+  }
+
+  /** On chain the owner name is the player's username (MsgPlayerUpdateName). */
+  async rename(name) {
+    name = String(name || '').trim();
+    const problem = nameProblem(name);
+    if (problem) throw new Error(problem);
+    const mine = await this.keyDetails(this.myAddress()).catch(() => null);
+    if (mine && !mine.canManage) throw new Error('This key can’t change the owner name. Use a key that can manage keys.');
+    await this.settle(this.signing.queueMsgPlayerUpdateName(this.state.me.id, name), 'New name on the door — everyone in town sees it next tick.');
+    const pl = this.gs.keyPlayers[P.PLAYER].player;
+    if (pl) pl.username = name;
+    this.pull();
+    this.emit(['wallet']);
+  }
+
+  keyFrom(a, primary) {
+    const ua = describeBrowser(a.user_agent || '');
+    return {
+      address: a.address, isThis: a.address === this.myAddress(), isPrimary: a.address === primary,
+      ip: a.ip || null, browser: ua.browser, os: ua.os, label: ua.label,
+      lastActive: a.block_time ? new Date(a.block_time) : null,
+      permissions: Number(a.permissions || 0),
+      canManage: hasAll(a.permissions, MANAGE_KEYS), canSend: hasAll(a.permissions, SEND_GOLD),
+      gold: Number(a.alpha || 0), status: a.status,
+    };
+  }
+
+  async listKeys() {
+    const primary = this.gs.keyPlayers[P.PLAYER].player?.primary_address;
+    const list = await this.api.getPlayerAddressList(this.state.me.id);
+    const keys = list.map((a) => this.keyFrom(a, primary));
+    // The order the webapp shows: this browser, the main key, then the rest.
+    return keys.sort((a, b) => (b.isThis - a.isThis) || (b.isPrimary - a.isPrimary) || ((b.lastActive || 0) - (a.lastActive || 0)));
+  }
+
+  async keyDetails(address) {
+    const primary = this.gs.keyPlayers[P.PLAYER].player?.primary_address;
+    return this.keyFrom(await this.api.getPlayerAddress(address), primary);
+  }
+
+  async setKeyPermissions(address, { manage, send }) {
+    const me = await this.keyDetails(this.myAddress());
+    if (!me.canManage) throw new Error('This key can’t change other keys.');
+    const req = new SetAddressPermissionsRequestDTO();
+    req.address = address;
+    req.permissions = this.permissionManager.getDefaultPlayerPermissions() | (manage ? MANAGE_KEYS : 0) | (send ? SEND_GOLD : 0);
+    const r = await this.api.setAddressPermissions(req);
+    if (!r.success) throw new Error('The guild didn’t save that change.');
+    this.toast('Key updated.', 'good');
+  }
+
+  /** MsgAddressRevoke. Taking back this browser's own key signs it out. */
+  async takeBackKey(address) {
+    const primary = this.gs.keyPlayers[P.PLAYER].player?.primary_address;
+    if (address === primary) throw new Error('The main key can’t be taken back — it belongs to your recovery phrase.');
+    await this.settle(this.signing.queueMsgAddressRevoke(address), address === this.myAddress() ? null : 'Key taken back. That device is signed out.');
+    this.api.getPlayerAddressCount(this.state.me.id, true).catch(() => {});
+  }
+
+  /** Watch GRASS for one frame, resolving with it (or rejecting after `ms`). */
+  waitForFrame(name, match, ms = 15 * 60 * 1000) {
+    let done = false;
+    let cancel;
+    const p = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { done = true; reject(new Error('That took too long. Try again.')); }, ms);
+      this.grass.registerListener({
+        name, shouldUnregister: () => done,
+        handler(msg) { if (!done && match(msg)) { done = true; clearTimeout(timer); resolve(msg); } },
+      });
+      cancel = () => { if (!done) { done = true; clearTimeout(timer); reject(new Error('cancelled')); } };
+    });
+    p.cancel = cancel;
+    return p;
+  }
+
+  /**
+   * Cut a key: ask the guild for an activation code, then wait for the new
+   * device to ask for it. Resolves to { code, request } — `request` is a
+   * promise of the device's pending registration (cancellable).
+   */
+  async cutKey() {
+    const me = await this.keyDetails(this.myAddress());
+    if (!me.canManage) throw new Error('This key can’t cut new keys. Use a key that can manage keys.');
+    const req = new CreateActivationCodeRequestDTO();
+    req.logged_in_address = this.myAddress();
+    req.guild_id = this.gs.thisGuild.id;
+    const r = await this.api.createActivationCode(req);
+    if (!r.success || !r.data?.code) throw new Error('The guild couldn’t make a key code right now.');
+    const code = String(r.data.code);
+    const request = this.waitForFrame(`A_LA_STRUCTS_KEY_REQUEST_${code}`,
+      (m) => m.category === 'player_address_pending' && m.subject === `structs.address.register.${code}` && !m.permissions);
+    const out = request.then((m) => {
+      const p = new PlayerAddressPendingFactory().make(m);
+      const ua = describeBrowser(p.user_agent || '');
+      return { code, address: p.address, ip: p.ip, label: ua.label, browser: ua.browser, os: ua.os, raw: p };
+    });
+    out.cancel = request.cancel;
+    return { code, request: out };
+  }
+
+  /** Approve a device's pending key with the chosen permissions (MsgAddressRegister). */
+  async approveKey(request, { manage, send }) {
+    const p = request.raw;
+    p.permissions = this.permissionManager.getDefaultPlayerPermissions() | (manage ? MANAGE_KEYS : 0) | (send ? SEND_GOLD : 0);
+    const gid = this.gs.thisGuild.id, pid = this.state.me.id;
+    const approved = this.waitForFrame(`A_LA_STRUCTS_KEY_APPROVED_${p.code}`,
+      (m) => m.category === 'player_address' && m.subject === `structs.player.${gid}.${pid}` && m.status === 'approved' && m.address === p.address, 3 * 60 * 1000);
+    const ok = await this.auth.activateDevice(p);
+    if (!ok) { approved.cancel(); throw new Error('The guild didn’t accept that key.'); }
+    await approved.catch(() => {});   // the chain may be slow to say so; the key works either way
+    this.api.getPlayerAddressCount(pid, true).catch(() => {});
+    this.toast('New key handed over. That device is signing in.', 'good');
+  }
+
+  async refuseKey(request) {
+    try { await this.api.deleteActivationCode(request.code); } catch (e) { /* the code expires anyway */ }
+  }
+
+  /**
+   * Sign this browser out. Like the webapp: a key that isn't the main one is
+   * taken back on chain first; the main one just ends the guild session.
+   */
+  async signOutWarnings() {
+    const me = await this.keyDetails(this.myAddress());
+    let onlyManager = false;
+    if (me.canManage) onlyManager = (await this.listKeys()).filter((k) => k.canManage).length === 1;
+    return { assets: me.isPrimary ? 0 : me.gold, onlyManager, primary: me.isPrimary };
+  }
+
+  async signOut() {
+    const me = await this.keyDetails(this.myAddress()).catch(() => null);
+    if (me && !me.isPrimary) { try { await this.signing.queueMsgAddressRevoke(me.address); } catch (e) { console.warn('[signout] revoke failed', e); } }
+    try { await this.api.logout(); } catch (e) { /* the session ends with the page either way */ }
+    forgetSession();
+    location.reload();
+  }
+
+  async findRecipients(query, groupId = null) {
+    const dto = new TransferSearchRequestDTO();
+    dto.search_string = encodeURIComponent(String(query || '').trim());
+    dto.guild_id = groupId || null;
+    const list = await this.api.transferSearch(dto);
+    return list.filter((p) => p.id !== this.state.me.id).map((p) => ({
+      id: p.id, address: p.address, name: p.username || `Owner ${p.id}`, species: speciesFor(p.id, 'owner'),
+      guildName: p.guild_name || '', guildTag: p.tag || '',
+      restaurantName: p.planet_id ? restaurantNameFor(p.planet_id, p.username) : null,
+    }));
+  }
+
+  async sendGold(recipient, amount) {
+    amount = Math.floor(Number(amount));
+    if (!(amount > 0)) throw new Error('Choose how much gold to send.');
+    if (amount > this.state.wallet.gold) throw new Error('You don’t have that much gold.');
+    const me = await this.keyDetails(this.myAddress()).catch(() => null);
+    if (me && !me.canSend) throw new Error('This key isn’t allowed to send gold. Ask a key that manages keys to allow it.');
+    const from = this.gs.keyPlayers[P.PLAYER].player.primary_address;
+    await this.settle(this.signing.queueMsgPlayerSend(from, recipient.address, [{ denom: 'ualpha', amount: this.alphaManager.convertAlphaToUAlpha(amount) }]),
+      `Sent ${amount} gold to ${recipient.name}.`);
+  }
+
+  ledgerRow(t) {
+    const out = t.action === 'sent' || t.direction === 'debit' || Number(t.amount) < 0;
+    return {
+      id: t.id, time: t.time ? new Date(t.time) : null, amount: Math.abs(Number(t.amount || 0)), out,
+      kind: t.action || (out ? 'sent' : 'received'), counterparty: t.counterparty, counterpartyId: t.counterparty_player_id,
+      counterpartyName: t.counterparty_username || (t.counterparty_player_id ? `Owner ${t.counterparty_player_id}` : null),
+      tick: t.block_height ? Number(t.block_height) : null,
+    };
+  }
+
+  async ledger(page = 1) {
+    const [items, total] = await Promise.all([this.api.getTransactions(this.state.me.id, page), this.api.countTransactions(this.state.me.id)]);
+    return { items: items.map((t) => this.ledgerRow(t)), total, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
+  }
+
+  async ledgerEntry(id) { return this.ledgerRow(await this.api.getTransaction(id)); }
+
+  /* ── the group: profile, directory, members, bank ─────────────────────── */
+
+  async groupProfile(groupId = this.state.me.guildId) {
+    const soft = (p) => p.catch(() => null);
+    const [g, power, members, completed] = await Promise.all([
+      this.api.getGuild(groupId), soft(this.api.getGuildPowerStats(groupId, true)),
+      soft(this.api.countGuildMembers(groupId, true)), soft(this.api.countGuildPlanetsCompleted(groupId, true)),
+    ]);
+    const socials = g.socials || {};
+    return {
+      id: g.id, name: g.name || `Group ${g.id}`, tag: g.tag || '', description: g.description || '', logo: safeUrl(g.logo),
+      website: safeUrl(g.website), discord: safeUrl(socials.discord_server), isMine: g.id === this.state.me.guildId,
+      joinMinimum: Number(g.join_infusion_minimum || 0), ratio: Number(g.reactor_ratio || 0), commission: Number(g.default_commission || 0),
+      invested: power ? Number(power.total_fuel || 0) : null, takings: power ? Number(power.total_capacity || 0) : null,
+      payroll: power ? Number(power.total_load || 0) : null, avgTakings: power ? Number(power.avg_connection_capacity || 0) : null,
+      members, restaurantsCompleted: completed,
+    };
+  }
+
+  async groupDirectory() {
+    const list = await this.api.getGuildsDirectory(true);
+    return list.map((g) => ({ id: g.guild_id, name: g.name || `Group ${g.guild_id}`, logo: safeUrl(g.logo), gold: Number(g.alpha || 0), members: Number(g.members || 0), isMine: g.guild_id === this.state.me.guildId }));
+  }
+
+  async groupMembers(groupId = this.state.me.guildId) {
+    const roster = await this.api.getGuildRoster(groupId);
+    return roster.map((m) => ({
+      id: m.id, name: m.username || `Owner ${m.id}`, species: m.id === this.state.me.id ? this.state.me.species : speciesFor(m.id, 'owner'),
+      restaurantName: m.planet_id ? (m.id === this.state.me.id ? this.state.restaurant.name : restaurantNameFor(m.planet_id, m.username)) : null,
+      recipes: Number(m.ore || 0), gold: Number(m.alpha || 0), crewHome: m.fleet_status !== 'away', underChallenge: Number(m.under_attack) === 1, isMe: m.id === this.state.me.id,
+    }));
+  }
+
+  async bank() {
+    const g = this.gs.thisGuild;
+    const inf = await this.api.getInfusionByPlayerId(this.state.me.id);
+    return {
+      invested: Number(inf.fuel || 0), clearing: Number(inf.defusing || 0), takings: Number(inf.power || 0),
+      joinMinimum: Number(g.join_infusion_minimum || 0), ratio: Number(g.reactor_ratio || 0), commission: Number(g.default_commission || 0),
+      gold: this.state.wallet.gold,
+    };
+  }
+
+  async bankDeposit(amount) {
+    amount = Math.floor(Number(amount));
+    if (!(amount > 0)) throw new Error('Choose how much gold to deposit.');
+    if (amount > this.state.wallet.gold) throw new Error('You don’t have that much gold.');
+    const from = this.gs.keyPlayers[P.PLAYER].player.primary_address;
+    await this.settle(this.signing.queueMsgReactorInfuse(from, this.gs.thisGuild.validator, { denom: 'ualpha', amount: this.alphaManager.convertAlphaToUAlpha(amount) }),
+      `Deposited ${amount} gold. Takings go up next tick.`);
+    this.refreshPlayer();
+  }
+
+  async bankWithdraw(amount) {
+    amount = Math.floor(Number(amount));
+    if (!(amount > 0)) throw new Error('Choose how much gold to withdraw.');
+    const b = await this.bank();
+    if (amount > b.invested) throw new Error('You haven’t deposited that much.');
+    if (b.invested - amount < b.joinMinimum) throw new Error(`Your group asks members to keep at least ${b.joinMinimum} gold in the bank.`);
+    const from = this.gs.keyPlayers[P.PLAYER].player.primary_address;
+    await this.settle(this.signing.queueMsgReactorDefuse(from, this.gs.thisGuild.validator, { denom: 'ualpha', amount: this.alphaManager.convertAlphaToUAlpha(amount) }),
+      `Withdrawing ${amount} gold — it clears before you can spend it.`);
+    this.refreshPlayer();
+  }
+
+  refreshPlayer() {
+    this.api.getPlayer(this.state.me.id).then((pl) => { this.gs.keyPlayers[P.PLAYER].setPlayer(pl); this.schedulePull(); }, () => {});
+  }
+
+  async rivalGroups() {
+    const list = await this.api.getGuildFilterList();
+    return list.map((g) => ({ id: g.id, name: g.name || `Group ${g.id}` }));
+  }
+}
+
+const ORDER_RETRIES = 2;
+/** Failures worth another try: the order may never have reached the chain. */
+function isTransient(err) {
+  const m = String(err || '');
+  if (/insufficient|not enough|out_of_range|destroyed|offline|unauthorized|permission|invalid/i.test(m)) return false;
+  return /timeout|timed out|network|socket|fetch|ECONN|connection|disconnect|closed|account sequence|sequence mismatch|\b50[234]\b|unavailable|broadcast/i.test(m);
+}
+
+const MANAGE_KEYS = PERMISSIONS.ADMIN | PERMISSIONS.UPDATE | PERMISSIONS.DELETE;
+const SEND_GOLD = PERMISSIONS.ASSETS_ALL;
+const hasAll = (p, mask) => (Number(p || 0) & mask) === mask;
+
+/** Only http(s) links from guild data make it onto the page. */
+function safeUrl(u) {
+  try { const x = new URL(String(u || '')); return /^https?:$/.test(x.protocol) ? x.href : null; } catch (e) { return null; }
 }

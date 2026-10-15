@@ -12,6 +12,12 @@ import { DemoService } from '../services/DemoService.js';
 import { Hangout, botsFromMembers } from '../services/Hangout.js';
 import { h, clear, icon, holdFocus } from './dom.js';
 import * as Panels from './panels.js';
+import { OFFICE } from './office.js';
+import { GROUP } from './group.js';
+import { loading } from './widgets.js';
+import { keyFob } from './dom.js';
+import { nameProblem } from '../services/Service.js';
+import { forgetSession } from '../services/session.js';
 import { sfx } from '../audio/sfx.js';
 import { BRAND, TERMS, ACTIONS, CHALLENGE_STATUS } from '../lexicon/terms.js';
 import { roleOf } from '../lexicon/roles.js';
@@ -31,6 +37,9 @@ function savedSession() {
 }
 const OLD_PREFS_KEY = 'pawsAndPlates.prefs.v1';   // before the rename; moved over once
 
+/** Sheets made of pages (see office.js / group.js): kind → { page: { title, load, render, leave } }. */
+const PAGES = { office: OFFICE, group: GROUP };
+
 export class App {
   constructor(root, { flavor = 'full', loadLive = null, hangoutUrl = null } = {}) {
     this.root = root;
@@ -42,6 +51,7 @@ export class App {
     this.sheet = null;
     this.toasts = [];
     this.targeting = null;
+    this.drafts = {};
     this.build();
   }
 
@@ -139,16 +149,28 @@ export class App {
           h('img', { src: portrait(this.engine.renderer, { species: sp, outfit: { ...OUTFITS.casual, apron: '#fff7e8', apronStyle: 'waist' }, seed: 'title-' + sp }), alt: '' })));
       }
       card.append(h('div', { class: 'field' }, h('label', {}, 'Choose your critter'), grid));
-      const nameIn = h('input', { id: 'owner-name', value: st.name, placeholder: 'Your name', maxlength: '24', oninput: (e) => { st.name = e.target.value; } });
+      const nameHint = h('small', { id: 'owner-name-hint' });
+      const showName = () => {
+        const why = st.name.trim() ? nameProblem(st.name) : null;
+        nameHint.textContent = why || '3–20 letters, numbers, - or _';
+        nameHint.className = why ? 'bad' : '';
+        nameIn.setAttribute('aria-invalid', why ? 'true' : 'false');
+      };
+      const nameIn = h('input', { id: 'owner-name', value: st.name, placeholder: 'Your name', maxlength: '20', autocomplete: 'nickname', 'aria-describedby': 'owner-name-hint', oninput: (e) => { st.name = e.target.value; showName(); } });
+      showName();
       const restIn = h('input', { id: 'rest-name', value: st.restaurant, placeholder: 'The Cozy Spoon Bistro', maxlength: '32', oninput: (e) => { st.restaurant = e.target.value; } });
       card.append(h('div', { class: 'row2' },
-        h('div', { class: 'field' }, h('label', { for: 'owner-name' }, 'Owner name'), nameIn),
+        h('div', { class: 'field' }, h('label', { for: 'owner-name' }, 'Owner name'), nameIn, nameHint),
         h('div', { class: 'field' }, h('label', { for: 'rest-name' }, 'Restaurant name'), restIn)));
       const liveOk = this.liveOk();
       card.append(h('div', { class: 'mode-cards' },
         h('button', { class: `mode-card ${st.mode === 'demo' ? 'on' : ''}`, onclick: () => { st.mode = 'demo'; render(); } }, h('b', {}, 'Demo kitchen'), h('small', {}, 'Plays offline against computer rivals, with the real combat rules.')),
         h('button', { class: `mode-card ${st.mode === 'live' ? 'on' : ''}`, disabled: !liveOk, onclick: () => { st.mode = 'live'; render(); } }, h('b', {}, 'Open for real'), h('small', {}, liveOk ? 'Join a Structs guild and take on real players.' : 'Run À la Structs on your machine to connect to a guild.'))));
-      card.append(h('button', { class: 'btn wide', onclick: () => this.start(st) }, st.mode === 'demo' ? 'Open the doors' : 'Pick a restaurant group'));
+      card.append(h('button', { class: 'btn wide', onclick: () => {
+        const why = nameProblem(st.name);
+        if (why) { showName(); nameHint.textContent = why; nameHint.className = 'bad'; nameIn.focus(); return; }
+        this.start(st);
+      } }, st.mode === 'demo' ? 'Open the doors' : 'Pick a restaurant group'));
       card.append(h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
       restore();
     };
@@ -168,7 +190,9 @@ export class App {
       nodes.push(
         h('div', { class: 'field' }, h('label', { for: 'phrase' }, 'Your recovery phrase'), ta,
           h('small', {}, 'We’ll find your restaurant and sign this browser in. Your phrase never leaves this page.')),
-        err, go);
+        err, go,
+        h('div', { class: 'or' }, h('span', {}, 'or')),
+        h('button', { class: 'btn wide sea', onclick: () => this.keyCodeSignIn() }, icon('key'), 'Use a key code from another device'));
     } else {
       nodes.push(h('div', { class: 'note' }, 'Signing in to a guild needs À la Structs running on your machine.'));
     }
@@ -284,7 +308,7 @@ export class App {
   /** A phrase is saved on this browser: skip the menus and sign straight back in. */
   async resumeLive(saved) {
     this.titleSay('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you back in.'));
-    const signOut = () => { try { localStorage.removeItem('gameState'); } catch (e) { /* ignore */ } location.reload(); };
+    const signOut = () => { forgetSession(); location.reload(); };
     try {
       const mod = await this.loadLive();
       let guild = null;
@@ -308,7 +332,7 @@ export class App {
    * published guild.json; groups whose guild.json can't be read are left out.
    * Resolves to the resolved guild, or null on Back.
    */
-  pickGuild(mod) {
+  pickGuild(mod, { action = 'Join this group', title = 'Pick your restaurant group', blurb = 'Your restaurant opens in the group you join. You can play against anyone in town.' } = {}) {
     const env = import.meta.env || {};
     let chosen = this.prefs.guildId || mod.lastGuild()?.id || env.VITE_GUILD_ID || null;
     return new Promise((resolve) => {
@@ -323,11 +347,11 @@ export class App {
           resolve(g);
         } catch (e) {
           err.textContent = e.message || String(e); err.hidden = false;
-          go.disabled = false; go.textContent = 'Join this group';
+          go.disabled = false; go.textContent = action;
         }
-      } }, 'Join this group');
-      this.titleSay('Pick your restaurant group',
-        h('p', { style: { textAlign: 'center', margin: 0 } }, 'Your restaurant opens in the group you join. You can play against anyone in town.'),
+      } }, action);
+      this.titleSay(title,
+        h('p', { style: { textAlign: 'center', margin: 0 } }, blurb),
         list, err, go,
         h('button', { class: 'btn wide ghost', onclick: () => resolve(null) }, 'Back'));
       const pick = (id) => {
@@ -365,6 +389,12 @@ export class App {
     svc.addEventListener('change', (e) => { if (this.svc === svc) this.onChange(e.detail.what); });
     svc.addEventListener('fx', (e) => { if (this.svc === svc) this.onFx(e.detail); });
     svc.addEventListener('toast', (e) => { if (this.svc === svc) this.announce(e.detail); });
+    svc.addEventListener('revoked', () => {
+      if (this.svc !== svc) return;
+      this.modal(icon('key', 'big-icon'), 'This browser’s key was taken back',
+        'Someone signed in as you took back this browser’s key from another device, so you’re signed out here. Sign in again with your recovery phrase or a new key code.',
+        [['OK', () => svc.logout()]]);
+    });
   }
 
   /* ── main game ────────────────────────────────────────────────────────── */
@@ -588,7 +618,7 @@ export class App {
     };
     const ownerImg = h('img', { alt: '' }), restaurant = h('b'), who = h('small'), badge = h('span', { class: 'mode-badge' });
     clear(this.hudTop).append(
-      h('div', { class: 'pill owner-pill' }, ownerImg, h('div', { class: 'who' }, restaurant, who), badge),
+      h('button', { class: 'pill owner-pill', type: 'button', title: 'Open the Office', onclick: () => { sfx.click(); this.openPage('office'); } }, ownerImg, h('div', { class: 'who' }, restaurant, who), badge),
       h('div', { class: 'stats' }, ...Object.values(stats)));
     this.hudTip?.remove();
     this.hudTip = h('div', { class: 'hud-tip', id: 'hud-tip', role: 'tooltip', hidden: true });
@@ -640,8 +670,10 @@ export class App {
       ['home', 'store', 'Restaurant', () => this.setView('home')],
       ['hire', 'hire', 'Hire', () => this.openSheet('hire', this.lastHireSection || 'space')],
       ['roster', 'staff', 'Staff', () => this.openSheet('roster')],
-      ['rivals', 'bell', 'Rivals', () => this.openSheet('rivals')],
+      ['rivals', 'bell', 'Rivals', () => this.openRivals()],
+      ['group', 'group', 'Group', () => this.openPage('group')],
       ['town', 'town', 'Town', () => this.setView('town')],
+      ['office', 'office', 'Office', () => this.openPage('office')],
       ['settings', 'gear', 'Settings', () => this.openSheet('settings')],
     ];
     if (ch) items.splice(1, 0, ['challenge', 'grumble', 'Challenge', () => this.setView('challenge')]);
@@ -684,36 +716,113 @@ export class App {
   /* ── sheets ───────────────────────────────────────────────────────────── */
 
   async openSheet(kind, arg) {
+    if (kind === 'rivals') return this.openRivals();
+    this.leavePage();
     if (kind === 'hire') this.lastHireSection = arg;
     this.sheet = { kind, arg };
-    if (kind === 'rivals') {
-      this.renderSheet(Panels.rivalsSheet(this, null, arg || ''));
-      try { this.rivals = await this.svc.findRivals(arg || ''); } catch (e) { this.rivals = []; this.announce({ text: this.svc.friendlyError(e), tone: 'bad' }); }
-      if (this.sheet?.kind === 'rivals') this.renderSheet(Panels.rivalsSheet(this, this.rivals, arg || ''));
-    } else this.refreshSheet();
+    this.refreshSheet();
     this.renderDock();
   }
 
-  refreshSheet() {
+  /* ── paged sheets (office, group) ─────────────────────────────────────── */
+
+  /**
+   * Open a page of a paged sheet. Pages opened from another page stack up, so
+   * the header gets a back button; `push: false` replaces the current page.
+   */
+  async openPage(kind, page = 'index', params = {}, { push = true } = {}) {
+    const prev = this.sheet && PAGES[this.sheet.kind] ? this.sheet : null;
+    this.leavePage();
+    const stack = prev ? (push ? [...prev.stack, { kind: prev.kind, page: prev.arg, params: prev.params }] : prev.stack) : [];
+    // Opening a section's front page from the dock starts that section afresh.
+    const fresh = page === 'index' && (!prev || prev.kind !== kind) && !Object.keys(params).length && push;
+    this.sheet = { kind, arg: page, params, stack: fresh ? [] : stack, data: undefined, error: null, key: `${page}|${params.id ?? params.address ?? params.page ?? ''}` };
+    this.refreshSheet(true);
+    this.renderDock();
+    return this.loadPage(this.sheet);
+  }
+
+  async loadPage(sheet = this.sheet) {
+    const def = PAGES[sheet.kind]?.[sheet.arg];
+    if (!def?.load) { sheet.data = null; return; }
+    sheet.error = null;
+    try { sheet.data = await def.load(this, sheet.params); } catch (e) { console.warn(e); sheet.error = this.svc.friendlyError(e); }
+    if (this.sheet === sheet) this.refreshSheet(true);
+  }
+
+  /** Re-fetch the page on screen (after an action changed what it shows). */
+  reloadPage() { return this.sheet && PAGES[this.sheet.kind] ? this.loadPage(this.sheet) : null; }
+
+  pageBack() {
+    const s = this.sheet;
+    if (!s?.stack?.length) return this.closeSheet();
+    this.leavePage();
+    const top = s.stack[s.stack.length - 1];
+    this.sheet = { kind: top.kind, arg: top.page, params: top.params, stack: s.stack.slice(0, -1), data: undefined, error: null, key: `${top.page}|${top.params.id ?? top.params.address ?? top.params.page ?? ''}` };
+    this.refreshSheet(true);
+    this.renderDock();
+    return this.loadPage(this.sheet);
+  }
+
+  /** Let the page on screen tidy up (cancel a wait, drop a draft). */
+  leavePage() {
+    const s = this.sheet;
+    if (s && PAGES[s.kind]) PAGES[s.kind][s.arg]?.leave?.(this);
+  }
+
+  pageContent() {
+    const s = this.sheet, def = PAGES[s.kind][s.arg];
+    const title = typeof def.title === 'function' ? def.title(this, s.data, s.params) : def.title;
+    let out;
+    if (s.error) out = { body: [h('div', { class: 'note warn' }, s.error), h('button', { class: 'btn small ghost', style: { justifySelf: 'start' }, onclick: () => { s.error = null; s.data = undefined; this.refreshSheet(true); this.loadPage(s); } }, 'Try again')] };
+    else if (s.data === undefined && def.load) out = { body: [loading()] };
+    else out = def.render(this, s.data, s.params);
+    return { title, ...out, back: s.stack.length ? () => { sfx.close(); this.pageBack(); } : null };
+  }
+
+  /* ── rivals ───────────────────────────────────────────────────────────── */
+
+  /** Open the rivals sheet, optionally changing the search (filters reset the page to 1). */
+  async openRivals(patch = null) {
+    this.leavePage();
+    const f = this.rivalFilters ??= { query: '', minRecipes: 0, groupId: null, crewOut: false, notBusy: false, page: 1 };
+    if (patch) Object.assign(f, 'page' in patch ? patch : { ...patch, page: 1 });
+    this.sheet = { kind: 'rivals', arg: '' };
+    this.rivalResult = null;
+    this.refreshSheet(true);
+    this.renderDock();
+    if (!this.rivalGroupList) this.svc.rivalGroups().then((g) => { this.rivalGroupList = g; if (this.sheet?.kind === 'rivals') this.refreshSheet(true); }, () => { this.rivalGroupList = []; });
+    const ask = { ...f };
+    try { this.rivalResult = await this.svc.searchRivals(ask); } catch (e) { this.rivalResult = { list: [], total: 0, pages: 1, page: 1 }; this.announce({ text: this.svc.friendlyError(e), tone: 'bad' }); }
+    if (JSON.stringify(this.rivalFilters) !== JSON.stringify(ask)) return;   // a newer search is on its way
+    this.rivals = this.rivalResult.list;
+    if (this.sheet?.kind === 'rivals') this.refreshSheet(true);
+  }
+
+  refreshSheet(force = false) {
     if (!this.sheet) return;
     const { kind, arg } = this.sheet;
+    // Don't redraw under someone typing (a re-render would reset the field).
+    if (!force && document.activeElement?.closest?.('.sheet') && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
     let content;
     if (kind === 'staff') content = Panels.staffSheet(this, arg);
     else if (kind === 'hire') content = Panels.hireSheet(this, arg);
     else if (kind === 'roster') content = Panels.rosterSheet(this);
     else if (kind === 'settings') { if (document.activeElement?.closest?.('.sheet')) return; content = Panels.settingsSheet(this); }
     else if (kind === 'notebook') content = Panels.notebookSheet(this);
-    else if (kind === 'rivals') { if (document.activeElement?.id === 'rival-search') return; content = Panels.rivalsSheet(this, this.rivals, arg || ''); }
+    else if (kind === 'rivals') content = Panels.rivalsSheet(this, this.rivalResult, this.rivalFilters);
+    else if (PAGES[kind]) content = this.pageContent();
     if (content) this.renderSheet(content);
   }
 
-  renderSheet({ title, body, foot }) {
+  renderSheet({ title, body, foot, back }) {
     const scroll = this.sheetEl?.querySelector('.body')?.scrollTop || 0;
     const restore = holdFocus(this.sheetEl);
-    const same = this.sheetEl && this.sheetEl.dataset.kind === this.sheet.kind && this.sheetEl.dataset.arg === String(this.sheet.arg ?? '');
+    const key = String(this.sheet.key ?? this.sheet.arg ?? '');
+    const same = this.sheetEl && this.sheetEl.dataset.kind === this.sheet.kind && this.sheetEl.dataset.arg === key;
     this.sheetEl?.remove();
-    const el = h('section', { class: 'sheet', 'aria-label': title, 'data-kind': this.sheet.kind, 'data-arg': String(this.sheet.arg ?? '') },
-      h('header', {}, h('h2', {}, title), h('button', { class: 'x', 'aria-label': 'Close', onclick: () => { sfx.close(); this.closeSheet(); } }, icon('close'))),
+    const el = h('section', { class: 'sheet', 'aria-label': title, 'data-kind': this.sheet.kind, 'data-arg': key },
+      h('header', {}, back ? h('button', { class: 'x back', 'aria-label': 'Back', onclick: back }, icon('back')) : null, h('h2', {}, title), h('button', { class: 'x', 'aria-label': 'Close', onclick: () => { sfx.close(); this.closeSheet(); } }, icon('close'))),
       h('div', { class: 'body' }, ...body),
       foot && foot.length ? h('div', { class: 'foot' }, ...foot) : null);
     if (same) el.style.animation = 'none';
@@ -724,6 +833,7 @@ export class App {
   }
 
   closeSheet() {
+    this.leavePage();
     this.sheetEl?.remove(); this.sheetEl = null; this.sheet = null;
     this.scene()?.select?.call(this.scene(), null);
     this.renderDock();
@@ -750,6 +860,7 @@ export class App {
       if (id !== t.sourceId) { this.announce({ text: t.kind === 'serve' ? 'They can’t reach that one — pick a highlighted target.' : 'Pick a highlighted teammate in the same restaurant.', tone: 'bad' }); return; }
     }
     sfx.pop();
+    this.leavePage();
     this.sheet = { kind: 'staff', arg: id };
     this.refreshSheet();
     this.renderDock();
@@ -814,7 +925,7 @@ export class App {
     if (this.view === 'challenge') this.challengeScene.setTargeting({ attackerId: t.sourceId, valid: t.valid });
   }
 
-  closeSheetQuiet() { this.sheetEl?.remove(); this.sheetEl = null; this.sheet = null; }
+  closeSheetQuiet() { this.leavePage(); this.sheetEl?.remove(); this.sheetEl = null; this.sheet = null; }
 
   endTargeting() {
     if (!this.targeting) return;
@@ -884,12 +995,69 @@ export class App {
     restore();
   }
 
+  /**
+   * How a challenge ended, told in two beats: a stamp across the screen
+   * (the webapp's victory/defeat banner), then the Manager walks you through
+   * what happened (its dialogue sequences), recipes won or lost included.
+   */
   showChallengeResult(ch) {
     if (!ch?.result || !this.svc) return;
     const r = ch.result;
     const guest = ch.role === 'challenger';
-    const title = { raidSuccessful: r.stolen ? (guest ? 'Recipes copied!' : 'They copied your recipes') : 'Nothing to copy', attackerDefeated: guest ? 'Your critic is satisfied' : 'Critic satisfied — party over!', attackerRetreated: 'Crew headed home' }[r.status] || CHALLENGE_STATUS[r.status] || 'Service over';
-    this.modal(icon(r.tone === 'good' ? 'sparkle' : r.tone === 'bad' ? 'grumble' : 'door', 'big-icon'), title, r.text, [['Back to my restaurant', () => { this.svc.dismissChallenge?.(); this.setView('home'); }]]);
+    const n = r.stolen || 0;
+    const recipes = `${n} recipe${n === 1 ? '' : 's'}`;
+    const done = () => { this.svc.dismissChallenge?.(); this.setView('home'); };
+    let stamp = null, steps;
+    if (r.status === 'raidSuccessful' && guest) {
+      stamp = { text: n ? 'Recipes copied!' : 'Full service', tone: 'good' };
+      steps = n ? [`We did it! We sat through the whole service at ${ch.restaurantName} and copied ${recipes}.`, 'They’re in our recipe box now. Your Sous Chef will perfect them into gold.']
+        : [`We stayed the whole service at ${ch.restaurantName}… but there wasn’t a single recipe to copy.`, 'Next time, look for a rival with more recipes ready — the search can filter for that.'];
+    } else if (r.status === 'raidSuccessful') {
+      stamp = { text: n ? 'Recipes copied' : 'Close call', tone: n ? 'bad' : 'info' };
+      steps = n ? [`${ch.guest.name}’s crew stayed through service and copied ${recipes} from us.`, 'Soft-Serve Machines keep our reputation up, so copying takes longer. More staff covering the Manager helps too.']
+        : [`${ch.guest.name}’s crew stayed through service, but there was nothing for them to copy.`, 'Our recipe box was empty — lucky us.'];
+    } else if (r.status === 'attackerDefeated' && guest) {
+      stamp = { text: 'Party’s over', tone: 'bad' };
+      steps = [`Their staff at ${ch.restaurantName} fully satisfied our Food Critic, so the whole crew had to go home.`, 'No recipes this time. Hire a few more grumpy customers — and cover our Manager — before we try again.'];
+    } else if (r.status === 'attackerDefeated') {
+      stamp = { text: 'Five stars!', tone: 'good' };
+      steps = [`We satisfied ${ch.guest.name}’s Food Critic and the whole party went home happy!`, 'Every one of our recipes is safe.'];
+    } else {
+      steps = [r.text || 'The crew headed home.'];
+    }
+    const story = () => this.story(steps, { title: { raidSuccessful: guest ? 'Back from service' : 'They’ve left', attackerDefeated: guest ? 'Sent home' : 'Party over!', attackerRetreated: 'Crew headed home' }[r.status] || CHALLENGE_STATUS[r.status] || 'Service over', tone: r.tone, onDone: done });
+    if (stamp) this.stampBanner(stamp, story); else story();
+  }
+
+  /** A rubber stamp slammed across the screen; tap (or wait) to continue. */
+  stampBanner({ text, tone }, then) {
+    const el = h('div', { class: `stamp-back ${tone}`, role: 'alert', tabindex: '-1' }, h('div', { class: 'stamp' }, text), h('small', {}, 'Tap to continue'));
+    let gone = false;
+    const go = () => { if (gone) return; gone = true; el.remove(); then?.(); };
+    el.addEventListener('click', go);
+    el.addEventListener('keydown', go);
+    this.ui.appendChild(el);
+    el.focus();
+    setTimeout(go, 3200);
+  }
+
+  /** The Manager talks you through something, one bubble at a time. */
+  story(lines, { title, tone, onDone }) {
+    const s = this.svc.state, mgr = this.svc.manager();
+    const img = mgr ? Panels.face(this, mgr, s.types.get(mgr.typeId)) : Panels.ownerFace(this, s.me.id || 'me', s.me.species);
+    const back = h('div', { class: 'modal-back', role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
+    let i = 0;
+    const show = () => {
+      const last = i === lines.length - 1;
+      clear(back).append(h('div', { class: `modal story ${tone || ''}` },
+        h('h2', {}, title),
+        h('div', { class: 'story-line' }, h('img', { src: img, alt: '' }), h('div', { class: 'bubble', 'aria-live': 'polite' }, lines[i])),
+        h('div', { class: 'story-dots', 'aria-hidden': 'true' }, ...lines.map((_, k) => h('i', { class: k === i ? 'on' : '' }))),
+        h('button', { class: 'btn', onclick: () => { if (last) { back.remove(); onDone?.(); } else { i++; show(); } } }, last ? 'Back to my restaurant' : 'Next', last ? null : icon('next'))));
+      back.querySelector('button')?.focus();
+    };
+    this.ui.appendChild(back);
+    show();
   }
 
   /* ── peeking & town ───────────────────────────────────────────────────── */
@@ -1017,10 +1185,14 @@ export class App {
 
   /* ── misc ─────────────────────────────────────────────────────────────── */
 
-  setProfile(p) {
+  async setProfile(p) {
     const s = this.svc.state;
     if (p.species) { s.me.species = p.species; this.prefs.species = p.species; }
-    if (p.name != null) { s.me.name = p.name.trim() || s.me.name; this.prefs.name = s.me.name; }
+    if (p.name != null && p.name.trim() !== s.me.name) {
+      // The owner name is the player's name on chain, so it goes through the service.
+      try { await this.svc.rename(p.name); } catch (e) { sfx.complain(); this.announce({ text: this.svc.friendlyError(e), tone: 'bad' }); return; }
+      this.prefs.name = s.me.name;
+    }
     this.savePrefs();
     this.svc.save?.();
     this.hangout?.setMe({ name: s.me.name, species: s.me.species });
@@ -1030,6 +1202,106 @@ export class App {
     if (this.view === 'home') this.setView('home', { force: true });
     this.openSheet('settings');
     this.renderHud();
+  }
+
+  /** After an on-chain rename: tell the town and redraw the HUD. */
+  afterRename() {
+    const s = this.svc.state;
+    this.hangout?.setMe({ name: s.me.name, species: s.me.species });
+    this.hangout?.announce('here');
+    if (this.townScene) { this.townScene.dispose(); this.townScene = null; }
+    this.renderHud();
+  }
+
+  sfxPing() { sfx.alarm(); }
+
+  /** Demo: back to the title (asks first mid-challenge, since leaving forfeits). */
+  leaveDemo() {
+    const st = this.svc.state;
+    if (st.challenge?.status === 'ongoing') {
+      return this.confirm('Leave mid-challenge?', st.challenge.role === 'defender' ? 'Leaving now forfeits the challenge: their crew copies your recipes.' : 'Leaving now forfeits the challenge: your crew comes home empty-handed.', 'Leave anyway', () => this.backToTitle());
+    }
+    this.backToTitle();
+  }
+
+  /**
+   * Live sign-out, with the webapp's two warnings: gold sitting on this key
+   * (only the main key's gold is the restaurant's), and being the last key
+   * that can manage keys.
+   */
+  async signOutFlow() {
+    let w = { assets: 0, onlyManager: false, primary: true };
+    try { w = await this.svc.signOutWarnings(); } catch (e) { console.warn('[signout]', e); }
+    const go = () => this.confirm('Sign out on this browser?',
+      w.primary ? 'You’ll need your recovery phrase, or a key code from another device, to sign back in here.'
+        : 'This browser’s key is handed back, so it can’t be used again. To come back, use a key code from another device or your recovery phrase.',
+      'Sign out', () => this.backToTitle());
+    const steps = [];
+    if (w.assets > 0) steps.push(['Gold on this key', `This browser’s key holds ${gold(w.assets)} gold of its own. After you sign out it stays at that key’s address, out of reach from here. Send it to your restaurant first if you need it.`]);
+    if (w.onlyManager) steps.push(['Last key that manages keys', 'No other device can cut keys or take them back. After you sign out, only your recovery phrase can do that.']);
+    const next = () => { const st = steps.shift(); if (!st) return go(); this.modal(icon('info', 'big-icon'), st[0], st[1], [['Sign out anyway', next, 'berry'], ['Never mind', null]]); };
+    next();
+  }
+
+  /**
+   * Continue → Use a key code: sign in on this browser without the recovery
+   * phrase. Pick the group, type the code from another device, confirm it's
+   * your restaurant, then wait for that device to approve this one.
+   */
+  async keyCodeSignIn() {
+    const mod = await this.loadLiveModule();
+    if (!mod) return;
+    const guild = this.sameOriginGuild() ? null : await this.pickGuild(mod, { action: 'Use this group', title: 'Which group is your restaurant in?', blurb: 'Key codes work in the group that made them.' });
+    if (!this.sameOriginGuild() && !guild) return this.showContinue();
+    this.titleSay('Ringing the guild…', loading(`Connecting to ${guild?.name || 'the guild'}.`));
+    let signedIn;
+    try { signedIn = await this.connectLive(mod, guild); } catch (e) { return this.liveFailed(e, () => this.showContinue()); }
+    if (signedIn) { this.applyProfile(); return this.enterGame(); }
+    const svc = this.svc;
+    const askCode = (error = '', value = '') => {
+      const inp = h('input', { id: 'key-code', value, placeholder: 'e.g. 4F7KQ2', autocomplete: 'one-time-code', autocapitalize: 'characters', spellcheck: 'false', class: 'code-input' });
+      const err = h('div', { class: 'note warn', hidden: !error }, error);
+      const go = h('button', { class: 'btn wide', type: 'submit' }, 'Find my restaurant');
+      this.titleSay('Use a key code',
+        h('ol', { class: 'steps' },
+          h('li', {}, 'On a device that’s already signed in, open ', h('b', {}, 'Office → Key ring'), '.'),
+          h('li', {}, 'Tap ', h('b', {}, 'Cut a new key'), ' and type the code it shows here.')),
+        h('form', { class: 'field', onsubmit: async (e) => {
+          e.preventDefault();
+          go.disabled = true; go.textContent = 'Looking it up…'; err.hidden = true;
+          try { confirmOwner(await svc.lookupKeyCode(inp.value)); } catch (x) { askCode(svc.friendlyError(x), inp.value); }
+        } }, h('label', { for: 'key-code' }, 'Key code'), inp, err, go),
+        h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
+      inp.focus({ preventScroll: true });
+    };
+    const confirmOwner = (owner) => {
+      this.titleSay('Is this your restaurant?',
+        h('div', { class: 'owner-confirm' }, h('img', { src: Panels.ownerFace(this, owner.playerId, owner.species), alt: '' }),
+          h('div', {}, h('b', {}, owner.tag ? `[${owner.tag}] ${owner.name}` : owner.name), h('small', {}, `Owner #${owner.playerId} · ${guild?.name || 'this group'}`))),
+        h('button', { class: 'btn wide', onclick: () => request(owner) }, 'Yes, that’s me'),
+        h('button', { class: 'btn wide ghost', onclick: () => askCode('', '') }, 'No, that’s not me'));
+    };
+    const request = async (owner) => {
+      this.titleSay('Asking for a key…', loading('Sending the request.'));
+      let req;
+      try { req = await svc.requestKey(owner); } catch (e) { return askCode(svc.friendlyError(e)); }
+      this.titleSay('Waiting for approval',
+        h('div', { class: 'owner-confirm' }, keyFob(req.address, 'big'), h('div', {}, h('b', {}, 'This browser’s new key'), h('small', {}, 'Check it matches the one on your other device.'))),
+        h('p', { style: { textAlign: 'center', margin: 0 } }, 'Approve the request on your other device. You can choose there what this key may do.'),
+        loading('Waiting for your other device…'),
+        h('button', { class: 'btn wide ghost', onclick: () => { req.approved.cancel(); location.reload(); } }, 'Cancel'));
+      try { await req.approved; } catch (e) {
+        if (/cancel/.test(e.message)) return;
+        return this.titleSay('The key didn’t arrive', h('div', { class: 'note warn' }, svc.friendlyError(e)), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Start again'));
+      }
+      sfx.hire();
+      this.titleSay('Key received!', loading('Signing you in…'));
+      try { await svc.completeKeySignIn(owner); this.applyProfile(); this.enterGame(); } catch (e) {
+        console.error(e);
+        this.titleSay('That didn’t work', h('div', { class: 'note warn' }, svc.friendlyError(e)), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Try again'));
+      }
+    };
+    askCode();
   }
 
   toggleSound() {
@@ -1052,7 +1324,7 @@ export class App {
   confirm(title, text, yes, fn) { this.modal(icon('info', 'big-icon'), title, text, [[yes, fn, 'berry'], ['Never mind', null]]); }
 
   backToTitle() {
-    if (this.svc?.mode === 'live') { Promise.resolve(this.matrix?.stop()).finally(() => this.svc.logout()); return; }
+    if (this.svc?.mode === 'live') { Promise.resolve(this.matrix?.stop()).finally(() => this.svc.signOut()); return; }
     clearInterval(this.hudTimer);
     this.svc?.stop();
     this.hangout?.stop(); this.hangout = null;

@@ -11,12 +11,13 @@
 import '../../vendor/structs-desktop/simulator-types.js';
 import '../../vendor/structs-desktop/simulator-chain.js';
 import '../../vendor/structs-desktop/simulator-ai.js';
-import { Service } from './Service.js';
+import { Service, nameProblem, describeBrowser, bankTakings, PAGE_SIZE } from './Service.js';
 import { TypeCatalog, STATUS, is, isCommand, normalizeStruct, COMMAND, weaponField, hasWeapon } from '../game/model.js';
 import { roleOf } from '../lexicon/roles.js';
 import { AREAS, AMBIT_FLAG } from '../lexicon/areas.js';
 import { nameFor, rng } from '../lexicon/names.js';
 import { MY_GROUP, RIVAL_GROUPS, buildRoster } from './demo/world.js';
+import { hash } from '../lexicon/names.js';
 
 const G = typeof window !== 'undefined' ? window : globalThis;
 const SAVE_KEY = 'aLaStructs.demo.v1';
@@ -49,6 +50,11 @@ const MINE_TICKS = 9;
 const REFINE_TICKS = 7;
 const BANK_RATE = 100000;     // cash per gold invested at the bank
 const GEN_RATE = 100000;      // × generatingRate per gold invested in a generator
+const BANK_COMMISSION = 0.05; // the group's cut of bank takings
+const BANK_MINIMUM = 10;      // gold members keep in the group bank
+const CLEAR_TICKS = 20;       // a withdrawal clears (cools down) for this long
+const ALL_GROUPS = [MY_GROUP, ...RIVAL_GROUPS];
+const BANK = { ratio: BANK_RATE, commission: BANK_COMMISSION };
 
 export class DemoService extends Service {
   constructor(opts = {}) {
@@ -123,6 +129,8 @@ export class DemoService extends Service {
       slots: { space: 4, air: 4, land: 4, water: 4 }, reputation: 0,
     };
     s.crew = { status: 'home', at: s.restaurant.id };
+    s.office = freshOffice(s.tick);
+    s.stats = { restaurantsCompleted: 0, challengesLaunched: 0, recipesFound: 0, recipesCopied: 0, recipesLost: 0 };
     s.structs = new Map();
     for (const [name, ambit, slot, loc] of START_ROSTER) {
       const t = s.types.named(name);
@@ -155,7 +163,7 @@ export class DemoService extends Service {
       const forfeit = ch?.status === 'ongoing' ? { role: ch.role, guestName: ch.guest.name, restaurantName: ch.restaurantName } : null;
       localStorage.setItem(SAVE_KEY, JSON.stringify({
         v: 1, tick: s.tick, me: s.me, wallet: s.wallet, restaurant: s.restaurant, crew: { status: 'home', at: s.restaurant.id },
-        structs: [...s.structs.values()], jobs: [...s.jobs.entries()], seq: this.seq, forfeit,
+        structs: [...s.structs.values()], jobs: [...s.jobs.entries()], seq: this.seq, forfeit, office: s.office, stats: s.stats,
       }));
     } catch (e) { /* storage may be unavailable */ }
   }
@@ -175,6 +183,8 @@ export class DemoService extends Service {
       s.tick = d.tick; s.me = d.me; s.wallet = d.wallet; s.restaurant = d.restaurant; s.crew = d.crew;
       s.structs = new Map(d.structs.filter((x) => !is.destroyed(x)).map((x) => [x.id, { ...x, status: x.status & ~STATUS.HIDDEN }]));
       s.jobs = new Map(d.jobs || []);
+      s.office = d.office || freshOffice(s.tick);
+      s.stats = d.stats || { restaurantsCompleted: 0, challengesLaunched: 0, recipesFound: 0, recipesCopied: 0, recipesLost: 0 };
       this.seq = d.seq || 100;
       if (d.forfeit) this.settleForfeit(d.forfeit);
       if (this.profile.name) s.me.name = this.profile.name;
@@ -189,6 +199,7 @@ export class DemoService extends Service {
     if (f.role === 'defender') {
       const stolen = Math.max(0, s.wallet.recipes - this.frozenRecipes(this.myStructs()));
       s.wallet.recipes -= stolen;
+      if (s.stats) s.stats.recipesLost += stolen;
       this.forfeitNote = { tone: 'bad', text: stolen
         ? `You left during ${f.guestName}’s visit, so their crew copied ${stolen} of your recipes.`
         : `You left during ${f.guestName}’s visit. They found no recipes to copy.` };
@@ -208,7 +219,7 @@ export class DemoService extends Service {
 
   recompute() {
     const s = this.state;
-    let payroll = 0, takings = (s.wallet.bank || 0) * BANK_RATE, rep = 0;
+    let payroll = 0, takings = bankTakings(s.wallet.bank || 0, BANK), rep = 0;
     for (const st of s.structs.values()) {
       const t = this.typeOf(st);
       if (!t || is.destroyed(st)) continue;
@@ -256,7 +267,7 @@ export class DemoService extends Service {
           const j = s.jobs.get(st.id) || { kind: 'mine', progress: 0 };
           j.progress += 1 / MINE_TICKS; j.label = 'Recipe testing'; j.stalled = false;
           if (j.progress >= 1) {
-            j.progress = 0; s.restaurant.undiscovered--; s.wallet.recipes++;
+            j.progress = 0; s.restaurant.undiscovered--; s.wallet.recipes++; s.stats.recipesFound++;
             this.fx({ kind: 'job', structId: st.id, job: 'mine' });
             this.toast(`Chef ${nameFor(st.id)} discovered a new recipe!`, 'good', st.id);
             if (s.restaurant.undiscovered === 0) this.toast('That was the last recipe to discover here. Open a new restaurant (Staff menu) to keep the gold coming.', 'info', st.id);
@@ -278,6 +289,16 @@ export class DemoService extends Service {
           s.jobs.set(st.id, j);
         }
       }
+    }
+
+    // Bank withdrawals that have finished clearing land in the wallet.
+    const cleared = s.office.clearing.filter((c) => s.tick >= c.readyTick);
+    if (cleared.length) {
+      s.office.clearing = s.office.clearing.filter((c) => s.tick < c.readyTick);
+      const n = cleared.reduce((a, c) => a + c.amount, 0);
+      s.wallet.gold += n;
+      this.toast(`${n} gold you withdrew from the bank has cleared — it’s yours to spend.`, 'good');
+      what.push('wallet');
     }
 
     if (this.chain) this.challengeBlock(what);
@@ -464,7 +485,7 @@ export class DemoService extends Service {
       this.toast(`Invested ${amount} gold in your ${roleOf(t).role}: +${(amount * t.generatingRate * GEN_RATE / 1e6).toFixed(1)}M takings per tick.`, 'good', structId);
     } else {
       s.wallet.bank = (s.wallet.bank || 0) + amount;
-      this.toast(`Deposited ${amount} gold at the bank: +${(amount * BANK_RATE / 1e6).toFixed(1)}M takings.`, 'good');
+      this.toast(`Deposited ${amount} gold at the bank: +${(bankTakings(amount, BANK) / 1e6).toFixed(1)}M takings.`, 'good');
     }
     s.wallet.gold -= amount;
     this.recompute();
@@ -476,6 +497,7 @@ export class DemoService extends Service {
     if (s.crew.status !== 'home') throw new Error('Call the crew home first.');
     // Planetary structs stay with the old restaurant (released), as on chain.
     for (const st of [...s.structs.values()]) if (st.locationType === 'planet') s.structs.delete(st.id);
+    s.stats.restaurantsCompleted++;
     const n = Math.floor(Math.random() * 900 + 100);
     s.restaurant = { id: `2-${n}`, name: s.restaurant.name.replace(/( No\. \d+)?$/, ` No. ${Math.floor(Math.random() * 9) + 2}`), undiscovered: 14, slots: { space: 4, air: 4, land: 4, water: 4 }, reputation: 0 };
     s.crew.at = s.restaurant.id;
@@ -514,18 +536,25 @@ export class DemoService extends Service {
     };
   }
 
-  async findRivals(query = '') {
-    const q = query.trim().toLowerCase();
-    return this.rivals
-      .filter((r) => !q || r.name.toLowerCase().includes(q) || r.restaurantName.toLowerCase().includes(q) || r.guildName.toLowerCase().includes(q))
+  async findRivals(query = '') { return (await this.searchRivals({ query })).list; }
+
+  async searchRivals({ query = '', minRecipes = 0, groupId = null, crewOut = false, notBusy = false, page = 1 } = {}) {
+    const q = String(query || '').trim().toLowerCase();
+    const all = this.rivals
+      .filter((r) => !q || r.name.toLowerCase().includes(q) || r.restaurantName.toLowerCase().includes(q) || r.guildName.toLowerCase().includes(q) || r.id === q)
+      .filter((r) => r.recipes >= (Number(minRecipes) || 0) && (!groupId || r.guildId === groupId) && (!crewOut || !r.crewHome))
       .map((r) => ({
         id: r.id, name: r.name, species: r.species, restaurantName: r.restaurantName, guildName: r.guildName, guildTag: r.guildTag,
         recipes: r.recipes, reputation: r.reputation, crewHome: r.crewHome,
         staff: r.structs.filter((x) => !is.destroyed(normalizeStruct(x, this.state.types))).length,
         underChallenge: false, planetId: r.planetId,
       }))
+      .filter((r) => !notBusy || !r.underChallenge)
       .sort((a, b) => b.recipes - a.recipes);
+    return { list: all.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), total: all.length, pages: Math.max(1, Math.ceil(all.length / PAGE_SIZE)), page };
   }
+
+  async rivalGroups() { return RIVAL_GROUPS.map((g) => ({ id: g.id, name: g.name })); }
 
   /* ── service challenges ──────────────────────────────────────────────── */
 
@@ -609,6 +638,7 @@ export class DemoService extends Service {
     if (!rival) throw new Error('Rival not found.');
     const host = this.rivalAsSide(rival), guest = this.meAsSide();
     this.beginChallenge('challenger', host, guest, rival);
+    s.stats.challengesLaunched++;
     s.crew = { status: 'away', at: rival.planetId };
     this.toast(`Your crew walks into ${rival.restaurantName} as customers. Complain until you can copy their recipes — and keep your Food Critic unsatisfied!`, 'info');
     this.emit(['all']);
@@ -823,11 +853,11 @@ export class DemoService extends Service {
     const kept = frozen && hostRecipes ? (iWasGuest ? ' Their Extra Freezer kept some safe.' : ' Your Extra Freezer kept some safe.') : '';
     if (status === 'raidSuccessful') {
       if (iWasGuest) {
-        s.wallet.recipes += stolen; this.rival.recipes -= stolen;
+        s.wallet.recipes += stolen; this.rival.recipes -= stolen; s.stats.recipesCopied += stolen;
         text = stolen ? `You copied ${stolen} recipe${stolen === 1 ? '' : 's'} from ${ch.restaurantName}!${kept}` : `You stayed the whole service, but there were no recipes to copy at ${ch.restaurantName}.${kept}`;
         tone = stolen ? 'good' : 'info';
       } else {
-        s.wallet.recipes -= stolen;
+        s.wallet.recipes -= stolen; s.stats.recipesLost += stolen;
         text = stolen ? `${ch.guest.name}’s crew copied ${stolen} of your recipes.${kept}` : `${ch.guest.name}’s crew stayed the whole service, but found no recipes to copy.${kept}`;
         tone = stolen ? 'bad' : 'info';
       }
@@ -895,4 +925,225 @@ export class DemoService extends Service {
     if (this.hustle() < cost) return `Needs ${cost} hustle`;
     return null;
   }
+
+  /* ── the office: owner card, keys, gold ───────────────────────────────── */
+
+  everyone() { return [...this.members, ...this.rivals]; }
+
+  async getProfile(playerId = this.state.me.id) {
+    const s = this.state;
+    if (playerId === s.me.id) {
+      return {
+        id: s.me.id, isMe: true, name: s.me.name, address: addressOf(s.me.id), species: s.me.species,
+        guildId: s.me.guildId, guildName: s.me.guildName, guildTag: s.me.guildTag, restaurantName: s.restaurant.name,
+        gold: s.wallet.gold, invested: s.wallet.bank || 0, takings: s.wallet.takings, payroll: s.wallet.payroll, ...s.stats,
+      };
+    }
+    const p = this.everyone().find((x) => x.id === playerId);
+    if (!p) throw new Error('Couldn’t find that owner.');
+    const h = hash(p.id);
+    return {
+      id: p.id, isMe: false, name: p.name, address: addressOf(p.id), species: p.species,
+      guildId: p.guildId, guildName: p.guildName, guildTag: p.guildTag, restaurantName: p.restaurantName,
+      gold: p.gold, invested: 10 + (h % 70), takings: (10 + (h % 70)) * BANK_RATE, payroll: (h % 40) * 1e5,
+      restaurantsCompleted: h % 5, challengesLaunched: (h >>> 3) % 12, recipesFound: 6 + ((h >>> 5) % 40),
+      recipesCopied: (h >>> 7) % 9, recipesLost: (h >>> 9) % 7,
+    };
+  }
+
+  async rename(name) {
+    name = String(name || '').trim();
+    const problem = nameProblem(name);
+    if (problem) throw new Error(problem);
+    this.state.me.name = name;
+    this.save();
+    this.toast('New name on the door.', 'good');
+    this.emit(['wallet']);
+  }
+
+  async listKeys() {
+    return this.state.office.keys.map((k) => ({ ...k, isThis: k.address === THIS_KEY, lastActive: k.address === THIS_KEY ? new Date() : new Date(k.lastActive) }));
+  }
+
+  async keyDetails(address) {
+    const k = (await this.listKeys()).find((x) => x.address === address);
+    if (!k) throw new Error('That key isn’t yours anymore.');
+    return k;
+  }
+
+  async setKeyPermissions(address, { manage, send }) {
+    const k = this.state.office.keys.find((x) => x.address === address);
+    if (!k) throw new Error('That key isn’t yours anymore.');
+    if (k.isPrimary) throw new Error('The main key can always do everything.');
+    k.canManage = !!manage; k.canSend = !!send;
+    this.save();
+    this.toast('Key updated.', 'good');
+  }
+
+  async takeBackKey(address) {
+    const o = this.state.office;
+    const k = o.keys.find((x) => x.address === address);
+    if (!k) return;
+    if (k.isPrimary) throw new Error('The main key can’t be taken back — it belongs to your recovery phrase.');
+    if (address === THIS_KEY) throw new Error('In the demo kitchen this browser keeps its key. Use Back to title instead.');
+    o.keys = o.keys.filter((x) => x.address !== address);
+    this.save();
+    this.toast(`Key taken back. ${k.label} is signed out.`, 'good');
+  }
+
+  /** In the demo a pretend phone asks for the key a few seconds after you cut it. */
+  async cutKey() {
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const devices = [
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
+    ];
+    const ua = devices[Math.floor(Math.random() * devices.length)];
+    let timer, reject;
+    const request = new Promise((res, rej) => {
+      reject = rej;
+      timer = setTimeout(() => {
+        const d = describeBrowser(ua);
+        res({ code, address: `demo-key-${code.toLowerCase()}`, ip: '192.0.2.' + (10 + Math.floor(Math.random() * 200)), label: d.label, browser: d.browser, os: d.os, ua });
+      }, 4500);
+    });
+    request.cancel = () => { clearTimeout(timer); reject(new Error('cancelled')); };
+    return { code, request };
+  }
+
+  async approveKey(req, { manage, send }) {
+    await new Promise((r) => setTimeout(r, 900));
+    this.state.office.keys.push({ address: req.address, isPrimary: false, ip: req.ip, label: req.label, browser: req.browser, os: req.os, lastActive: Date.now(), canManage: !!manage, canSend: !!send, gold: 0 });
+    this.save();
+    this.toast(`New key handed over. ${req.label} is signed in.`, 'good');
+  }
+
+  async findRecipients(query) {
+    const q = String(query || '').trim().toLowerCase();
+    return this.everyone()
+      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.restaurantName.toLowerCase().includes(q) || p.id === q || addressOf(p.id) === q)
+      .slice(0, 30)
+      .map((p) => ({ id: p.id, address: addressOf(p.id), name: p.name, species: p.species, guildName: p.guildName, guildTag: p.guildTag, restaurantName: p.restaurantName }));
+  }
+
+  async sendGold(recipient, amount) {
+    const s = this.state;
+    amount = Math.floor(Number(amount));
+    if (!(amount > 0)) throw new Error('Choose how much gold to send.');
+    if (amount > s.wallet.gold) throw new Error('You don’t have that much gold.');
+    const p = this.everyone().find((x) => x.id === recipient.id);
+    if (p) p.gold += amount;
+    s.wallet.gold -= amount;
+    this.addLedger({ amount, out: true, kind: 'sent', counterpartyId: recipient.id, counterpartyName: recipient.name, counterparty: addressOf(recipient.id) });
+    this.toast(`Sent ${amount} gold to ${recipient.name}.`, 'good');
+    this.save();
+    this.emit(['wallet']);
+  }
+
+  addLedger(row) {
+    const o = this.state.office;
+    o.ledger.unshift({ id: String(++o.txSeq), time: Date.now(), tick: this.state.tick, ...row });
+  }
+
+  async ledger(page = 1) {
+    const items = this.state.office.ledger.map((t) => ({ ...t, time: new Date(t.time) }));
+    return { items: items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), total: items.length, pages: Math.max(1, Math.ceil(items.length / PAGE_SIZE)) };
+  }
+
+  async ledgerEntry(id) {
+    const t = this.state.office.ledger.find((x) => x.id === String(id));
+    return t ? { ...t, time: new Date(t.time) } : null;
+  }
+
+  /* ── the group: profile, directory, members, bank ─────────────────────── */
+
+  async groupProfile(groupId = this.state.me.guildId) {
+    const g = ALL_GROUPS.find((x) => x.id === groupId);
+    if (!g) throw new Error('Couldn’t find that group.');
+    const mine = g.id === MY_GROUP.id;
+    const members = await this.groupMembers(g.id);
+    const invested = members.reduce((a, m) => a + (m.isMe ? (this.state.wallet.bank || 0) : 10 + (hash(m.id) % 70)), 0);
+    const blurbs = {
+      [MY_GROUP.id]: 'A cozy row of family kitchens. We share recipes, cover each other’s Managers, and never skip staff meal.',
+      [RIVAL_GROUPS[0].id]: 'Big portions, bigger appetites. The Gravy Train rolls into town most nights — lock up your recipes.',
+      [RIVAL_GROUPS[1].id]: 'Late-night noodle bars run by sneaky night owls. You won’t see their Hosts coming.',
+    };
+    return {
+      id: g.id, name: g.name, tag: g.tag, description: blurbs[g.id] || '', logo: null, website: null, discord: null, isMine: mine,
+      joinMinimum: BANK_MINIMUM, ratio: BANK_RATE, commission: BANK_COMMISSION,
+      invested, takings: bankTakings(invested, BANK), payroll: Math.round(bankTakings(invested, BANK) * 0.7),
+      avgTakings: Math.round(bankTakings(invested, BANK) / Math.max(1, members.length)),
+      members: members.length, restaurantsCompleted: members.reduce((a, m) => a + (m.isMe ? this.state.stats.restaurantsCompleted : hash(m.id) % 5), 0),
+    };
+  }
+
+  async groupDirectory() {
+    const out = [];
+    for (const g of ALL_GROUPS) {
+      const members = await this.groupMembers(g.id);
+      out.push({ id: g.id, name: g.name, logo: null, members: members.length, gold: members.reduce((a, m) => a + (m.gold || 0), 0), isMine: g.id === MY_GROUP.id });
+    }
+    return out.sort((a, b) => b.gold - a.gold);
+  }
+
+  async groupMembers(groupId = this.state.me.guildId) {
+    const s = this.state;
+    const row = (p) => ({ id: p.id, name: p.name, species: p.species, restaurantName: p.restaurantName, recipes: p.recipes, gold: p.gold, crewHome: p.crewHome !== false, underChallenge: false, isMe: false });
+    if (groupId === MY_GROUP.id) {
+      return [{ id: s.me.id, name: s.me.name, species: s.me.species, restaurantName: s.restaurant.name, recipes: s.wallet.recipes, gold: s.wallet.gold, crewHome: s.crew.status === 'home', underChallenge: this.underChallenge(), isMe: true },
+        ...this.members.map(row)];
+    }
+    return this.rivals.filter((r) => r.guildId === groupId).map(row);
+  }
+
+  async bank() {
+    const s = this.state;
+    return {
+      invested: s.wallet.bank || 0, clearing: s.office.clearing.reduce((a, c) => a + c.amount, 0),
+      clearingTicks: s.office.clearing.length ? Math.max(0, Math.min(...s.office.clearing.map((c) => c.readyTick)) - s.tick) : 0,
+      takings: bankTakings(s.wallet.bank || 0, BANK), joinMinimum: BANK_MINIMUM, ratio: BANK_RATE, commission: BANK_COMMISSION, gold: s.wallet.gold,
+    };
+  }
+
+  async bankDeposit(amount) {
+    await this.investGold(null, amount);
+    this.save();
+  }
+
+  async bankWithdraw(amount) {
+    const s = this.state;
+    amount = Math.floor(Number(amount));
+    if (!(amount > 0)) throw new Error('Choose how much gold to withdraw.');
+    if (amount > (s.wallet.bank || 0)) throw new Error('You haven’t deposited that much.');
+    if ((s.wallet.bank || 0) - amount < BANK_MINIMUM) throw new Error(`Your group asks members to keep at least ${BANK_MINIMUM} gold in the bank.`);
+    s.wallet.bank -= amount;
+    s.office.clearing.push({ amount, readyTick: s.tick + CLEAR_TICKS });
+    this.recompute();
+    this.toast(`Withdrawing ${amount} gold. It clears in ${CLEAR_TICKS} ticks, then it’s back in your wallet.`, 'info');
+    this.save();
+    this.emit(['wallet']);
+  }
+}
+
+const THIS_KEY = 'demo-this-browser';
+
+/** A made-up address for demo owners, so copy buttons have something to copy. */
+function addressOf(id) { return `structs1demo${String(hash(String(id))).padStart(10, '0')}`; }
+
+function freshOffice(tick) {
+  const here = describeBrowser(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+  const phone = describeBrowser('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
+  return {
+    keys: [
+      { address: THIS_KEY, isPrimary: true, ip: '127.0.0.1', label: here.label, browser: here.browser, os: here.os, lastActive: Date.now(), canManage: true, canSend: true, gold: 0 },
+      { address: 'demo-key-phone', isPrimary: false, ip: '192.0.2.44', label: phone.label, browser: phone.browser, os: phone.os, lastActive: Date.now() - 2 * 86400000, canManage: false, canSend: false, gold: 0 },
+    ],
+    ledger: [
+      { id: '2', time: Date.now() - 3600000, tick: tick - 20, amount: 5, out: true, kind: 'sent', counterpartyId: '1-311', counterpartyName: 'Juniper', counterparty: addressOf('1-311') },
+      { id: '1', time: Date.now() - 7200000, tick: tick - 60, amount: 30, out: false, kind: 'received', counterpartyId: null, counterpartyName: 'Whisker Row welcome fund', counterparty: null },
+    ],
+    txSeq: 2,
+    clearing: [],
+  };
 }

@@ -81,7 +81,72 @@ export const ICONS = {
   sound: S('<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="#8b7464"/><path d="M15 9a4 4 0 010 6M17.5 6.5a7.5 7.5 0 010 11" stroke="#8b7464" stroke-width="1.7" fill="none" stroke-linecap="round"/>'),
   info: S('<circle cx="12" cy="12" r="9" fill="#e6f7ff" stroke="#3d8fc0" stroke-width="1.5"/><path d="M12 11v5.5" stroke="#3d8fc0" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="7.8" r="1.2" fill="#3d8fc0"/>'),
   phone: S('<rect x="6" y="2.5" width="12" height="19" rx="3" fill="#7fd6b0" stroke="#3e9f73" stroke-width="1.4"/><rect x="8" y="5" width="8" height="12" rx="1.2" fill="#fffaf0"/><circle cx="12" cy="19.1" r="0.9" fill="#3e9f73"/>'),
+  key: S('<circle cx="8" cy="12" r="4.6" fill="#ffd166" stroke="#c98a00" stroke-width="1.5"/><circle cx="8" cy="12" r="1.7" fill="#fff7e8" stroke="#c98a00" stroke-width="1.2"/><path d="M12.4 12h8.6M17.5 12v3M20.2 12v2.2" stroke="#c98a00" stroke-width="2" stroke-linecap="round"/>'),
+  office: S('<rect x="3.5" y="10" width="17" height="10.5" rx="1.5" fill="#c98f5a" stroke="#8a5a3c" stroke-width="1.3"/><path d="M2.5 10.5h19" stroke="#8a5a3c" stroke-width="1.6" stroke-linecap="round"/><rect x="6" y="13" width="5" height="4.5" rx=".8" fill="#fff7e8"/><rect x="13" y="13" width="5" height="4.5" rx=".8" fill="#fff7e8"/><path d="M7 7.5c.8-2.4 2.6-3.6 5-3.6s4.2 1.2 5 3.6" stroke="#4a3428" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="12" cy="7" r="2.2" fill="#ff8fa3" stroke="#e0566a" stroke-width="1.2"/>'),
+  bank: S('<path d="M3 9.5L12 4l9 5.5z" fill="#ffd166" stroke="#c98a00" stroke-width="1.4" stroke-linejoin="round"/><path d="M5.5 10.5v7M9.8 10.5v7M14.2 10.5v7M18.5 10.5v7" stroke="#8b7464" stroke-width="2" stroke-linecap="round"/><rect x="3" y="18" width="18" height="2.6" rx="1" fill="#e6d3bd" stroke="#8b7464" stroke-width="1.2"/><circle cx="12" cy="7.6" r="1.1" fill="#c98a00"/>'),
+  ledger: S('<path d="M6 2.8h12v18.4l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z" fill="#fff" stroke="#8b7464" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.5 7h7M8.5 10h7M8.5 13h4" stroke="#b08968" stroke-width="1.4" stroke-linecap="round"/><circle cx="15.2" cy="15.6" r="2.2" fill="#ffd23f" stroke="#c98a00" stroke-width="1"/>'),
+  send: S('<circle cx="9" cy="14" r="6.3" fill="#ffd23f" stroke="#c98a00" stroke-width="1.4"/><path d="M7.4 12.6h2.3a1.2 1.2 0 010 2.4H7.9m0-2.4v3.7h2" stroke="#c98a00" stroke-width="1.3" fill="none" stroke-linecap="round"/><path d="M14 9.5l6.5-6.5M15.5 3h5v5" stroke="#3a9a6d" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'),
+  copy: S('<rect x="8" y="8" width="12" height="13" rx="2.2" fill="#fff" stroke="#8b7464" stroke-width="1.6"/><path d="M5.5 15.5h-.3A1.7 1.7 0 013.5 13.8V4.7A1.7 1.7 0 015.2 3h8.6a1.7 1.7 0 011.7 1.7V5" stroke="#8b7464" stroke-width="1.6" fill="none" stroke-linecap="round"/>'),
+  pencil: S('<path d="M4 20l1.2-4.6L15.8 4.8a2 2 0 012.8 0l.6.6a2 2 0 010 2.8L8.6 18.8z" fill="#ffd166" stroke="#c98a00" stroke-width="1.4" stroke-linejoin="round"/><path d="M4 20l4.6-1.2L5.2 15.4z" fill="#4a3428"/>'),
+  group: S('<path d="M5 21V3.5" stroke="#8b7464" stroke-width="1.8" stroke-linecap="round"/><path d="M5.5 4h12.5l-3 4 3 4H5.5z" fill="#ff8fa3" stroke="#e0566a" stroke-width="1.4" stroke-linejoin="round"/><circle cx="10.8" cy="8" r="1.7" fill="#fff"/>'),
+  out: S('<path d="M10 4H6a1.5 1.5 0 00-1.5 1.5v13A1.5 1.5 0 006 20h4" stroke="#8b7464" stroke-width="1.8" fill="none" stroke-linecap="round"/><path d="M14 8l4 4-4 4M9 12h9" stroke="#de5468" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'),
+  search: S('<circle cx="10.5" cy="10.5" r="6" fill="#e6f7ff" stroke="#3d8fc0" stroke-width="1.8"/><path d="M15 15l5 5" stroke="#3d8fc0" stroke-width="2.4" stroke-linecap="round"/>'),
+  link: S('<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1" stroke="#3d8fc0" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1" stroke="#3d8fc0" stroke-width="2" fill="none" stroke-linecap="round"/>'),
+  check: S('<circle cx="12" cy="12" r="9" fill="#dff5e9" stroke="#3a9a6d" stroke-width="1.5"/><path d="M8 12.3l2.7 2.7L16.2 9.4" stroke="#3a9a6d" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'),
+  next: S('<path d="M9.5 5.5L16 12l-6.5 6.5" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'),
+  trophy: S('<path d="M7 4h10v4.5a5 5 0 01-10 0z" fill="#ffd23f" stroke="#c98a00" stroke-width="1.4"/><path d="M7 6H4.5a2.5 2.5 0 003 3.5M17 6h2.5a2.5 2.5 0 01-3 3.5" stroke="#c98a00" stroke-width="1.4" fill="none"/><path d="M12 13.5V17M8.5 20.5h7l-1-3.5h-5z" stroke="#c98a00" stroke-width="1.4" fill="#ffd23f" stroke-linejoin="round"/>'),
 };
+
+/**
+ * A key fob drawn from an address: a little brass-ringed tag with a
+ * mirrored 5×5 stamp, so each device's key looks different at a glance
+ * (our take on the webapp's blockies).
+ */
+export function keyFob(address, cls = '') {
+  let x = 2166136261;
+  for (const c of String(address || '?')) { x ^= c.charCodeAt(0); x = Math.imul(x, 16777619) >>> 0; }
+  const next = () => { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; return (x >>> 0) / 4294967296; };
+  const hues = [350, 20, 42, 150, 190, 210, 265, 300];
+  const hue = hues[Math.floor(next() * hues.length)];
+  const bg = `hsl(${hue} 85% 88%)`, fg = `hsl(${hue} 55% 42%)`;
+  let cells = '';
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 3; c++) {
+      if (next() < 0.5) continue;
+      for (const cc of c === 2 ? [2] : [c, 4 - c]) cells += `<rect x="${7 + cc * 2}" y="${9 + r * 2}" width="2" height="2" rx=".4"/>`;
+    }
+  }
+  const svg = `<svg viewBox="0 0 24 24" aria-hidden="true" class="ico"><path d="M5 7.5a3 3 0 013-3h8a3 3 0 013 3V19a2 2 0 01-2 2H7a2 2 0 01-2-2z" fill="${bg}" stroke="${fg}" stroke-width="1.2"/><circle cx="12" cy="6" r="1.3" fill="#fffaf0" stroke="${fg}" stroke-width="1"/><path d="M12 4.7V1.8" stroke="#c98a00" stroke-width="1.6" stroke-linecap="round"/><g fill="${fg}">${cells}</g></svg>`;
+  return h('span', { class: `icon fob ${cls}`, html: svg });
+}
+
+/** Copy text, then flip the button's label to say so for a moment. */
+export function copyButton(text, label = 'Copy', cls = 'chip-btn') {
+  const b = h('button', { class: cls, type: 'button', title: `Copy ${text}` }, icon('copy'), h('span', {}, label));
+  b.addEventListener('click', () => {
+    const done = (ok) => { b.lastChild.textContent = ok ? 'Copied!' : 'Couldn’t copy'; setTimeout(() => { b.lastChild.textContent = label; }, 1400); };
+    (navigator.clipboard?.writeText(String(text)) || Promise.reject()).then(() => done(true), () => done(false));
+  });
+  return b;
+}
+
+/** "structs1abc…wxyz" */
+export function shortAddress(a) { a = String(a || ''); return a.length > 18 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a; }
+
+export function fmtDate(d) {
+  if (!d || Number.isNaN(+d)) return '—';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+export function fmtWhen(d) {
+  if (!d || Number.isNaN(+d)) return '—';
+  const s = (Date.now() - d) / 1000;
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  if (s < 86400 * 14) return `${Math.round(s / 86400)} days ago`;
+  return fmtDate(d);
+}
 
 export function icon(name, cls = '') { return h('span', { class: `icon ${cls}`, html: ICONS[name] || '' }); }
 

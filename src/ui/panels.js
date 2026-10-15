@@ -8,9 +8,11 @@ import { ROLES, roleOf, catalogSection, CATALOG_SECTIONS } from '../lexicon/role
 import { AREAS, AREA_ORDER, areaList } from '../lexicon/areas.js';
 import { TERMS, STATUS_WORDS, ACTIONS, DEFENSES, COUNTERS, CONTROL, BRAND } from '../lexicon/terms.js';
 import { nameFor, speciesFor, SPECIES, SPECIES_NAMES } from '../lexicon/names.js';
+import { nameProblem } from '../services/Service.js';
 import { OUTFITS } from '../three/outfits.js';
 import { PROP_IS_STRUCT } from '../three/props.js';
 import { is, isCommand, weaponsOf, possibleAreas, cash, gold, weaponReach } from '../game/model.js';
+import { pager, stepper } from './widgets.js';
 
 export function face(app, struct, type, opts = {}) {
   const role = roleOf(type);
@@ -243,40 +245,101 @@ export function rosterSheet(app) {
 
 /* ── Rivals ─────────────────────────────────────────────────────────────── */
 
-export function rivalsSheet(app, list, query = '') {
+/**
+ * Your restaurant and your crew at a glance (the webapp's Fleet Status cards):
+ * where the crew is, what's left to discover, and the two big moves — call
+ * the crew home, or move to a new location once every recipe is found.
+ */
+function statusCards(app) {
+  const svc = app.svc, st = svc.state, ch = st.challenge;
+  const staff = [...st.structs.values()].filter((x) => !is.destroyed(x)).length;
+  const out = ch?.role === 'challenger' && ch.status === 'ongoing';
+  const done = st.restaurant.undiscovered <= 0;
+  const home = h('div', { class: 'status-card' },
+    h('div', { class: 'status-head' }, icon('store'), h('div', {}, h('small', {}, 'Your restaurant'), h('b', {}, st.restaurant.name))),
+    h('div', { class: 'chips' },
+      h('span', { class: 'tagchip' }, icon('recipe'), `${st.wallet.recipes} ready`),
+      h('span', { class: `tagchip ${done ? 'bad' : ''}` }, icon('mystery'), done ? 'All discovered' : `${st.restaurant.undiscovered} to discover`),
+      h('span', { class: 'tagchip' }, icon('staff'), `${staff} on the books`),
+      h('span', { class: 'tagchip', title: 'Online Soft-Serve Machines slow down rivals copying your recipes' }, icon('sparkle'), `${st.restaurant.reputation || 0} rep`),
+      st.challenge?.role === 'defender' && st.challenge.status === 'ongoing' ? h('span', { class: 'tagchip bad' }, 'Rivals dining in!') : null),
+    done ? h('button', { class: 'btn small butter', disabled: st.crew.status !== 'home', title: st.crew.status !== 'home' ? 'Call the crew home first' : null, onclick: () => app.confirm('Move to a new location?', 'Every recipe here has been discovered. Your crew comes with you; kitchen staff and equipment stay at the old place.', 'Move', () => app.act(() => svc.openNewRestaurant())) }, icon('door'), 'Move to a new location') : null);
+  const mgr = svc.manager();
+  const crewState = !mgr ? ['No Manager', 'bad'] : out ? [`At ${ch.restaurantName}`, 'good'] : st.crew.status === 'home' ? ['Home, ready to go out', 'good'] : ['On the way', ''];
+  const crew = h('div', { class: 'status-card' },
+    h('div', { class: 'status-head' }, icon('walk'), h('div', {}, h('small', {}, 'Your crew'), h('b', {}, crewState[0]))),
+    !mgr ? h('div', { class: 'why' }, 'Hire a new Manager to lead the crew.') : null,
+    out ? h('div', { class: 'progress' }, h('i', { style: { width: `${Math.round((ch.heist?.progress || 0) * 100)}%` } })) : null,
+    out ? h('div', { class: 'actions' },
+      h('button', { class: 'btn small berry', onclick: () => { app.closeSheet(); app.setView('challenge'); } }, icon('bell'), 'Back to the table'),
+      h('button', { class: 'btn small ghost', onclick: () => app.confirm('Call the crew home?', 'Leaving now ends the challenge: your crew comes home without any recipes.', 'Call them home', () => app.act(() => svc.goHome())) }, 'Call them home')) : null,
+    !mgr ? h('button', { class: 'btn small', onclick: () => app.openSheet('hire', app.lastHireSection || 'space') }, icon('hire'), 'Hire a Manager') : null);
+  return h('div', { class: 'status-cards' }, home, crew);
+}
+
+/** On Station / Fleet Away / Under Attack, in restaurant words. */
+function rivalBadge(r) {
+  if (r.underChallenge) return h('span', { class: 'tagchip bad', title: 'Another crew is already dining there' }, 'Mid-challenge');
+  if (!r.crewHome) return h('span', { class: 'tagchip good', title: 'Their crew is out — fewer staff to serve you' }, 'Crew out');
+  return h('span', { class: 'tagchip', title: 'Their crew is home and serving' }, 'Open for service');
+}
+
+export function rivalsSheet(app, result, f) {
   const svc = app.svc, st = svc.state;
-  const search = h('input', { type: 'search', id: 'rival-search', placeholder: 'Search owners, restaurants, groups', value: query, 'aria-label': 'Search rivals' });
-  search.addEventListener('keydown', (e) => { if (e.key === 'Enter') app.openSheet('rivals', search.value); });
+  const search = h('input', { type: 'search', id: 'rival-search', placeholder: 'Owner, restaurant or owner no.', value: f.query, 'aria-label': 'Search rivals', autocomplete: 'off' });
+  const groups = app.rivalGroupList || [];
+  const groupSel = h('select', { id: 'rival-group', 'aria-label': 'Restaurant group', onchange: (e) => app.openRivals({ groupId: e.target.value || null }) },
+    h('option', { value: '' }, 'Any group'), ...groups.map((g) => h('option', { value: g.id, selected: g.id === f.groupId }, g.name)));
+  const active = (f.minRecipes > 0) + !!f.groupId + !!f.crewOut + !!f.notBusy;
+  app.rivalFiltersOpen ??= false;
+  const filters = h('details', { class: 'filters', open: app.rivalFiltersOpen, ontoggle: (e) => { app.rivalFiltersOpen = e.target.open; } },
+    h('summary', {}, icon('search'), 'Filters', active ? h('span', { class: 'count' }, String(active)) : null),
+    h('div', { class: 'filter-grid' },
+      h('div', { class: 'field' }, h('label', { for: 'rival-min' }, 'At least this many recipes ready'),
+        stepper({ id: 'rival-min', value: f.minRecipes, min: 0, max: 999, label: 'Minimum recipes', onChange: (v) => { clearTimeout(app.minTimer); app.minTimer = setTimeout(() => app.openRivals({ minRecipes: v }), 450); } })),
+      h('div', { class: 'field' }, h('label', { for: 'rival-group' }, 'Restaurant group'), groupSel),
+      h('div', { class: 'tabs' },
+        h('button', { class: `chip-btn ${f.crewOut ? 'on' : ''}`, 'aria-pressed': f.crewOut ? 'true' : 'false', onclick: () => app.openRivals({ crewOut: !f.crewOut }) }, 'Crew out only'),
+        h('button', { class: `chip-btn ${f.notBusy ? 'on' : ''}`, 'aria-pressed': f.notBusy ? 'true' : 'false', onclick: () => app.openRivals({ notBusy: !f.notBusy }) }, 'Skip busy restaurants'),
+        active ? h('button', { class: 'chip-btn', onclick: () => app.openRivals({ minRecipes: 0, groupId: null, crewOut: false, notBusy: false }) }, 'Clear filters') : null)));
   const body = [
-    h('p', {}, `Send your crew to a rival restaurant as customers. Complain until you can copy their recipes — but if they fully satisfy your Food Critic, the party goes home empty-handed.`),
-    h('div', { class: 'field' }, h('label', { for: 'rival-search' }, 'Find a rival'), h('div', { style: { display: 'flex', gap: '8px' } }, search, h('button', { class: 'btn small sea', onclick: () => app.openSheet('rivals', search.value) }, 'Search'))),
+    statusCards(app),
+    h('form', { class: 'field', onsubmit: (e) => { e.preventDefault(); app.openRivals({ query: search.value.trim() }); } },
+      h('label', { for: 'rival-search' }, 'Find a rival'),
+      h('div', { class: 'inline' }, search, h('button', { class: 'btn small sea', type: 'submit' }, icon('search'), 'Search'))),
+    filters,
   ];
   const blocker = st.challenge && st.challenge.status === 'ongoing' ? 'You’re already in a service challenge.' : st.crew.status !== 'home' ? 'Your crew is out.' : !svc.manager() ? 'You need a Manager to lead the crew. Hire a new one from Hire.' : null;
-  if (blocker) body.push(h('div', { class: 'note warn' }, blocker));
   if (svc.mode === 'demo' && !blocker) {
     body.push(h('div', { class: 'note' }, h('b', {}, 'Practice defending: '), 'invite a rival crew to dine at your place right now.', ' ',
       h('button', { class: 'btn small butter', style: { marginTop: '8px' }, onclick: () => { app.closeSheet(); svc.incomingChallenge(); } }, icon('door'), 'Invite them over')));
   }
-  if (!list) body.push(h('p', {}, 'Looking around town…'));
-  else if (!list.length) body.push(h('p', {}, 'Nobody matches that.'));
-  else for (const r of list) {
-    body.push(h('div', { class: 'card' },
-      h('img', { class: 'portrait', src: ownerFace(app, r.id, r.species), alt: '' }),
-      h('div', {},
-        h('h3', {}, r.restaurantName),
-        h('div', { class: 'sub' }, `${r.name}${r.guildName ? ` · ${r.guildName}` : ''}`),
-      ),
-      h('div', { class: 'meta' },
-        h('span', { class: 'tagchip', title: TERMS.ore }, icon('recipe'), `${r.recipes} recipes`),
-        r.reputation != null ? h('span', { class: 'tagchip' }, icon('sparkle'), `${r.reputation} rep`) : null,
-        r.staff != null ? h('span', { class: 'tagchip' }, icon('staff'), `${r.staff} staff`) : null,
-        h('span', { class: `tagchip ${r.crewHome ? 'bad' : 'good'}` }, r.crewHome ? 'Crew at home' : 'Crew out'),
-        r.underChallenge ? h('span', { class: 'tagchip bad' }, 'Already busy') : null),
-      h('div', { class: 'actions' },
-        h('button', { class: 'btn small berry', disabled: !!blocker || r.underChallenge, onclick: () => app.challenge(r) }, icon('bell'), 'Send the crew'),
-        h('button', { class: 'btn small ghost', onclick: () => app.peek(r.id, true) }, 'Size them up')),
-    ));
+  if (!result) body.push(h('p', {}, 'Looking around town…'));
+  else if (!result.list.length) body.push(h('p', {}, active || f.query ? 'Nobody matches that. Try fewer filters.' : 'No rivals around right now.'));
+  else {
+    body.push(h('p', { class: 'result-count' }, `${result.total} restaurant${result.total === 1 ? '' : 's'}${result.pages > 1 ? ` · page ${result.page || f.page} of ${result.pages}` : ''}`));
+    for (const r of result.list) {
+      const why = blocker || (r.underChallenge ? 'Another crew is already there.' : null);
+      body.push(h('div', { class: 'card' },
+        h('img', { class: 'portrait', src: ownerFace(app, r.id, r.species), alt: '' }),
+        h('div', {},
+          h('h3', {}, r.restaurantName),
+          h('div', { class: 'sub' }, `${r.guildTag ? `[${r.guildTag}] ` : ''}${r.name}${r.guildName ? ` · ${r.guildName}` : ''}`),
+          h('div', { class: 'chips' }, rivalBadge(r))),
+        h('div', { class: 'meta' },
+          h('span', { class: 'tagchip', title: TERMS.ore }, icon('recipe'), `${r.recipes} recipes`),
+          r.undiscovered ? h('span', { class: 'tagchip', title: TERMS.undiscoveredOre }, icon('mystery'), `${r.undiscovered} undiscovered`) : null,
+          r.reputation != null ? h('span', { class: 'tagchip' }, icon('sparkle'), `${r.reputation} rep`) : null,
+          r.staff != null ? h('span', { class: 'tagchip' }, icon('staff'), `${r.staff} staff`) : null),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn small berry', disabled: !!why, title: why, onclick: () => app.challenge(r) }, icon('bell'), 'Send the crew'),
+          h('button', { class: 'btn small ghost', onclick: () => app.peek(r.id, true) }, 'Size them up'),
+          h('button', { class: 'btn small ghost', onclick: () => app.openPage('office', 'profile', { id: r.id }) }, 'Owner card')),
+      ));
+    }
+    body.push(pager(f.page, result.pages, (p) => app.openRivals({ page: p })));
   }
+  if (blocker) body.splice(1, 0, h('div', { class: 'note warn' }, blocker));
   return { title: 'Rival Restaurants', body };
 }
 
@@ -285,7 +348,7 @@ export function rivalsSheet(app, list, query = '') {
 export function settingsSheet(app) {
   const svc = app.svc, st = svc.state;
   const body = [];
-  const nameIn = h('input', { id: 'set-name', value: st.me.name, maxlength: '24' });
+  const nameIn = h('input', { id: 'set-name', value: st.me.name, maxlength: '20', autocomplete: 'off' });
   body.push(h('div', { class: 'section-title' }, 'You'));
   const grid = h('div', { class: 'species-grid' });
   for (const sp of SPECIES) {
@@ -293,7 +356,9 @@ export function settingsSheet(app) {
       h('img', { src: ownerFace(app, st.me.id || 'me', sp), alt: '' })));
   }
   body.push(grid);
-  body.push(h('div', { class: 'field' }, h('label', { for: 'set-name' }, 'Owner name (shown in town)'), h('div', { style: { display: 'flex', gap: '8px' } }, nameIn, h('button', { class: 'btn small', onclick: () => app.setProfile({ name: nameIn.value }) }, 'Save'))));
+  const nameHint = h('small', {}, svc.mode === 'live' ? '3–20 letters, numbers, - or _. Everyone in town sees it, on every device.' : '3–20 letters, numbers, - or _.');
+  nameIn.addEventListener('input', () => { const why = nameProblem(nameIn.value); nameHint.textContent = why || 'Looks good.'; nameHint.className = why ? 'bad' : 'good'; });
+  body.push(h('div', { class: 'field' }, h('label', { for: 'set-name' }, 'Owner name'), h('div', { class: 'inline' }, nameIn, h('button', { class: 'btn small', onclick: () => { const why = nameProblem(nameIn.value); if (why) { nameHint.textContent = why; nameHint.className = 'bad'; nameIn.focus(); return; } app.setProfile({ name: nameIn.value }); } }, 'Save')), nameHint));
 
   if (svc.mode === 'demo') {
     body.push(h('div', { class: 'section-title' }, 'Kitchen clock'));
@@ -314,16 +379,16 @@ export function settingsSheet(app) {
     ['Recipes', 'Ore'], ['Undiscovered Recipes', 'Undiscovered Ore'], ['Gold', 'Alpha Matter'], ['Cash (takings / wages)', 'Energy (capacity / load)'],
     ['Hustle', 'Charge'], ['Tick', 'Block'], ['Service Challenge', 'Raid'], ['Serve / Complain', 'Attack'], ['Cover for', 'Defend'], ['Blend in', 'Stealth'],
     ['Clock in / out', 'Activate / Deactivate'], ['Hire / Buy', 'Build'], ['Morale / Needs', 'Health'], ['Fired', 'Destroyed'], ['Reputation (soft-serve)', 'Planetary shield'],
+    ['Office', 'Account'], ['Owner card', 'Player profile'], ['Key / Key ring', 'Device (address) / Devices'], ['Key code', 'Activation code'], ['Take back a key', 'Revoke address'],
+    ['Send gold / Ledger', 'Transfer Alpha / Transaction history'], ['Group bank', 'Reactor'], ['Deposit / Withdraw', 'Infuse / Defuse'], ['Clearing', 'Cooling down (defusion)'],
+    ['Restaurants run dry', 'Planets completed'], ['Crew out / Mid-challenge', 'Fleet away / Under attack'], ['Move to a new location', 'Explore a new planet'],
     ...Object.entries(ROLES).map(([k, v]) => [v.role, k]),
   ];
   body.push(h('div', { style: { overflowX: 'auto' } }, h('table', { class: 'gloss' }, h('tbody', {}, ...rows.map(([a, b]) => h('tr', {}, h('td', {}, a), h('td', {}, b)))))));
 
   const foot = [];
   if (svc.mode === 'demo') foot.push(h('button', { class: 'btn ghost small', onclick: () => app.confirm('Start the demo kitchen over?', 'Your demo restaurant, staff and gold reset to the opening day.', 'Start over', () => { svc.reset(); app.closeSheet(); }) }, 'Start the demo over'));
-  const midChallenge = svc.mode === 'demo' && st.challenge?.status === 'ongoing';
-  foot.push(h('button', { class: 'btn ghost small', onclick: () => (midChallenge
-    ? app.confirm('Leave mid-challenge?', st.challenge.role === 'defender' ? 'Leaving now forfeits the challenge: their crew copies your recipes.' : 'Leaving now forfeits the challenge: your crew comes home empty-handed.', 'Leave anyway', () => app.backToTitle())
-    : app.backToTitle()) }, svc.mode === 'demo' ? 'Back to title' : 'Sign out'));
+  foot.push(h('button', { class: 'btn ghost small', onclick: () => (svc.mode === 'demo' ? app.leaveDemo() : app.signOutFlow()) }, svc.mode === 'demo' ? 'Back to title' : 'Sign out'));
   return { title: 'Settings', body, foot };
 }
 

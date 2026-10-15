@@ -16,6 +16,27 @@ import { TypeCatalog, is, isCommand, COMMAND } from '../game/model.js';
 import { roleOf } from '../lexicon/roles.js';
 import { AREAS, AMBIT_FLAG } from '../lexicon/areas.js';
 
+/** Owner names follow the guild's rule: 3–20 letters, numbers, - or _. Returns why a name won't do, or null. */
+export function nameProblem(name) {
+  const n = String(name ?? '').trim();
+  if (n.length < 3) return 'Names need at least 3 characters.';
+  if (n.length > 20) return 'Names can be at most 20 characters.';
+  if (!/^[A-Za-z0-9_-]+$/.test(n)) return 'Use only letters, numbers, - and _ (no spaces).';
+  return null;
+}
+
+/** "Chrome on Mac OS X 10_15_7" from a user-agent string (structs-webapp's UserAgent, simplified). */
+export function describeBrowser(ua = '') {
+  const browser = /\bEdg\//.test(ua) ? 'Edge' : /\bFirefox\//.test(ua) ? 'Firefox' : /\bOPR\//.test(ua) ? 'Opera'
+    : /\bSamsungBrowser\//.test(ua) ? 'Samsung Internet' : /\bChrome\//.test(ua) ? 'Chrome' : /\bSafari\//.test(ua) ? 'Safari' : 'A browser';
+  const os = /iPhone|iPad/.test(ua) ? (/iPad/.test(ua) ? 'iPad' : 'iPhone') : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'Mac'
+    : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'an unknown device';
+  return { browser, os, label: `${browser} on ${os}` };
+}
+
+/** Rows per page in the guild API's paged lists (PAGINATION_LIMITS.DEFAULT). */
+export const PAGE_SIZE = 100;
+
 export class Service extends EventTarget {
   constructor(mode) {
     super();
@@ -132,4 +153,47 @@ export class Service extends EventTarget {
   async startChallenge(/* rival */) { throw new Error('not implemented'); }
   async goHome() { throw new Error('not implemented'); }
   async openNewRestaurant() { throw new Error('not implemented'); }
+
+  /* ── the office: owner card, keys (devices), gold ─────────────────────── */
+  /**
+   * An owner's card. { id, isMe, name, address, species, guildId, guildName,
+   * guildTag, restaurantName, gold, invested, takings, payroll,
+   * restaurantsCompleted, challengesLaunched, recipesFound, recipesCopied,
+   * recipesLost } — the counts are null when the guild doesn't track them.
+   */
+  async getProfile(/* playerId */) { throw new Error('not implemented'); }
+  async rename(/* name */) { throw new Error('not implemented'); }
+  /** Keys = the devices (addresses) signed in as this owner. */
+  async listKeys() { return []; }
+  async keyDetails(/* address */) { throw new Error('not implemented'); }
+  async setKeyPermissions(/* address, { manage, send } */) { throw new Error('not implemented'); }
+  async takeBackKey(/* address */) { throw new Error('not implemented'); }
+  /** Start cutting a key for another device: resolves to the code to type there. */
+  async cutKey() { throw new Error('not implemented'); }
+  async approveKey(/* request, { manage, send } */) { throw new Error('not implemented'); }
+  async refuseKey(/* request */) {}
+  /** Things to warn about before this browser signs out: { assets, onlyManager, primary }. */
+  async signOutWarnings() { return { assets: 0, onlyManager: false, primary: true }; }
+  async signOut() {}
+  async findRecipients(/* query, groupId */) { return []; }
+  async sendGold(/* recipient, amount */) { throw new Error('not implemented'); }
+  /** One page of the gold ledger: { items, total, pages }. */
+  async ledger(/* page */) { return { items: [], total: 0, pages: 1 }; }
+  async ledgerEntry(/* id */) { return null; }
+
+  /* ── the group: profile, directory, members, bank ─────────────────────── */
+  async groupProfile(/* groupId */) { throw new Error('not implemented'); }
+  async groupDirectory() { return []; }
+  async groupMembers(/* groupId */) { return []; }
+  /** The group bank (reactor): { invested, clearing, takings, joinMinimum, ratio, commission, gold }. */
+  async bank() { throw new Error('not implemented'); }
+  async bankDeposit(/* amount */) { throw new Error('not implemented'); }
+  async bankWithdraw(/* amount */) { throw new Error('not implemented'); }
+  /** Groups to filter the rival search by: [{ id, name }]. */
+  async rivalGroups() { return []; }
+}
+
+/** Takings the bank would pay for `invested` gold: ratio × (1 − commission), like ManageAlphaViewModel. */
+export function bankTakings(invested, bank) {
+  return Math.floor(Math.max(0, invested) * (bank.ratio || 0) * (1 - (bank.commission || 0)));
 }
