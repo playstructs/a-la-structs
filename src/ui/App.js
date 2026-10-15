@@ -857,7 +857,7 @@ export class App {
         sfx.pop();
         return;
       }
-      if (id !== t.sourceId) { this.announce({ text: t.kind === 'serve' ? 'They can’t reach that one — pick a highlighted target.' : 'Pick a highlighted teammate in the same restaurant.', tone: 'bad' }); return; }
+      if (id !== t.sourceId) { this.announce({ text: t.kind === 'serve' ? 'They can’t reach that one — pick a highlighted target.' : 'Pick one of your highlighted staff or equipment.', tone: 'bad' }); return; }
     }
     sfx.pop();
     this.leavePage();
@@ -901,9 +901,10 @@ export class App {
     const s = this.svc.state;
     const pool = this.view === 'challenge' && s.challenge ? s.challenge.structs : s.structs;
     const d = pool.get(defenderId) || s.structs.get(defenderId);
-    const valid = new Set([...pool.values()].filter((x) => x.owner === s.me.id && x.id !== defenderId && !is.destroyed(x) && x.locationId === d.locationId).map((x) => x.id));
-    if (!valid.size) { this.announce({ text: 'Nobody nearby to cover for.', tone: 'bad' }); return; }
-    this.startTargeting({ kind: 'cover', sourceId: defenderId, valid, hint: `Who should ${nameFor(defenderId)} cover for?` });
+    // Anyone of yours can be covered; only a defender in the same area takes the hits for them.
+    const valid = new Set([...pool.values()].filter((x) => x.owner === s.me.id && x.id !== defenderId && !is.destroyed(x)).map((x) => x.id));
+    if (!valid.size) { this.announce({ text: 'Nobody to cover for yet.', tone: 'bad' }); return; }
+    this.startTargeting({ kind: 'cover', sourceId: defenderId, sourceArea: d.ambit, valid, hint: `Who should ${nameFor(defenderId)} cover for? They take hits only for someone in the ${AREAS[d.ambit]?.name || 'same area'}.` });
   }
 
   startTargeting(t) {
@@ -914,7 +915,8 @@ export class App {
     // Every valid target is also a button, so nobody has to find (or reach) it in the 3D room.
     const pool = this.view === 'challenge' && this.svc.state.challenge ? this.svc.state.challenge.structs : this.svc.state.structs;
     const targets = [...t.valid].map((id) => pool.get(id)).filter(Boolean).map((x) => {
-      const need = t.kind === 'serve' ? (x.owner === this.svc.state.challenge?.guestId ? `${x.maxHealth - x.health}/${x.maxHealth} satisfied` : `${x.health}/${x.maxHealth} morale`) : '';
+      const need = t.kind === 'serve' ? (x.owner === this.svc.state.challenge?.guestId ? `${x.maxHealth - x.health}/${x.maxHealth} satisfied` : `${x.health}/${x.maxHealth} morale`)
+        : x.ambit === t.sourceArea ? 'same area · takes hits for them' : `${AREAS[x.ambit]?.short || 'other area'} · won’t take hits`;
       return h('button', { class: 'chip-btn', onclick: () => this.onSelect(x.id) }, this.whoIs(x.id), need ? h('small', {}, ` · ${need}`) : null);
     });
     this.hintEl = h('div', { class: 'targeting-hint', role: 'dialog', 'aria-label': t.hint },

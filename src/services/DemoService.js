@@ -411,7 +411,9 @@ export class DemoService extends Service {
     if (!t.canDefend) throw new Error('cannot_defend');
     if (!is.online(d)) throw new Error('offline');
     if (d.id === p.id) throw new Error('self_defense');
-    if (d.locationId !== p.locationId) throw new Error('not_in_range');
+    // Any crew member can cover anything of yours; only one in the same area
+    // actually takes the hits for them (the challenge's block rule).
+    if (p.owner !== this.state.me.id) throw new Error('You can only cover your own staff and equipment.');
     this.needHustle(t.defendChangeCharge || 0);
     this.discharge();
     d.protects = p.id;

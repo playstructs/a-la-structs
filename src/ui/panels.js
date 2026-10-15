@@ -42,7 +42,7 @@ function statusChips(struct, kind, extra = {}) {
   else if (!is.online(struct)) chips.push(h('span', { class: 'tagchip bad' }, w.offline));
   else chips.push(h('span', { class: 'tagchip good' }, w.online));
   if (is.hidden(struct)) chips.push(h('span', { class: 'tagchip' }, w.hidden));
-  if (struct.protects) chips.push(h('span', { class: 'tagchip' }, icon('shield'), `Covering ${extra.protectsName || 'a teammate'}`));
+  if (struct.protects) chips.push(h('span', { class: 'tagchip', title: extra.protectsAway ? 'They’re in another area, so they won’t take hits for them.' : 'Same area: they take hits for them.' }, icon('shield'), `Covering ${extra.protectsName || 'a teammate'}${extra.protectsAway ? ' (other area)' : ''}`));
   return chips;
 }
 
@@ -62,7 +62,9 @@ export function staffSheet(app, id) {
   const name = kind === 'equipment' ? role.role : nameFor(s.id);
   const title = isCustomer ? (isCommand(t) ? 'Food Critic' : role.customer?.persona || 'Customer') : (kind === 'equipment' ? role.role : `${name} the ${role.role}`);
   const allStructs = new Map([...(ch?.structs || []), ...st.structs]);
-  const protectsName = s.protects ? (allStructs.get(s.protects) ? nameFor(s.protects) : 'a teammate') : null;
+  const ward = s.protects ? allStructs.get(s.protects) : null;
+  const protectsName = s.protects ? (ward ? (roleOf(st.types.get(ward.typeId)).kind === 'equipment' ? `the ${roleOf(st.types.get(ward.typeId)).role}` : nameFor(s.protects)) : 'a teammate') : null;
+  const protectsAway = !!(ward && ward.ambit !== s.ambit);
   const job = st.jobs.get(s.id);
 
   const body = [];
@@ -75,7 +77,7 @@ export function staffSheet(app, id) {
         ? h('span', { class: 'tagchip' }, `Needs met: ${s.maxHealth - s.health} / ${s.maxHealth}`)
         : hearts(s.health, s.maxHealth)),
     )));
-  body.push(h('div', { class: 'meta', style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, ...statusChips(s, kind, { protectsName }), areaChip(s.ambit)));
+  body.push(h('div', { class: 'meta', style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, ...statusChips(s, kind, { protectsName, protectsAway }), areaChip(s.ambit)));
   const myCustomer = isCustomer && mine;
   body.push(h('div', { class: 'blurb' }, myCustomer
     ? (isCommand(t) ? 'Your Manager, posing as a Food Critic. If their staff fully satisfy them, your whole crew goes home. Keep them grumpy!' : `Your ${role.role}, posing as a ${role.customer?.persona || 'customer'}. Complain to their staff — if they get fully satisfied they’ll leave.`)
