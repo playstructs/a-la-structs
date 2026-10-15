@@ -248,6 +248,7 @@ button { font: inherit; color: inherit; }
 .field small { color: var(--muted); font-weight: 600; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.title-menu { display: grid; gap: 10px; margin-top: 4px; }
 .mode-card { appearance: none; border: 3px solid var(--line); border-radius: 20px; background: #fff; padding: 14px; text-align: left; cursor: pointer; display: grid; gap: 4px; }
 .mode-card b { font-family: var(--display); font-size: 1.1rem; }
 .mode-card small { color: var(--muted); font-weight: 600; }

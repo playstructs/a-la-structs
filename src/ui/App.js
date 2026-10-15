@@ -21,6 +21,14 @@ import { is, isCommand, cash, gold, weaponField } from '../game/model.js';
 import { OUTFITS } from '../three/outfits.js';
 
 const PREFS_KEY = 'aLaStructs.prefs.v1';
+
+/** A guild player signed in on this browser before (the webapp core keeps the phrase in `gameState`). */
+function savedSession() {
+  try {
+    const g = JSON.parse(localStorage.getItem('gameState') || 'null');
+    return g?.mnemonic && g?.thisPlayerId ? { playerId: String(g.thisPlayerId) } : null;
+  } catch (e) { return null; }
+}
 const OLD_PREFS_KEY = 'pawsAndPlates.prefs.v1';   // before the rename; moved over once
 
 export class App {
@@ -67,28 +75,57 @@ export class App {
       else if (this.targeting) this.endTargeting();
       else this.closeSheet();
     });
-    this.showTitle();
+    // Signed in on this browser before? Go straight back in.
+    const saved = this.liveOk() && savedSession();
+    if (saved) this.resumeLive(saved); else this.showTitle();
   }
 
   /* ── title screen ─────────────────────────────────────────────────────── */
 
   showTitle() {
+    this.titleBackdrop();
+    this.titlePage(
+      h('div', { class: 'logo' }, h('h1', {}, 'À la ', h('span', {}, 'Structs')), h('p', {}, BRAND.tagline)),
+      h('div', { class: 'title-menu' },
+        h('button', { class: 'btn wide', onclick: () => this.showNewGame() }, 'Start New Game'),
+        h('button', { class: 'btn wide ghost', onclick: () => this.showContinue() }, 'Continue')));
+    this.ui.querySelector('.title-menu button')?.focus({ preventScroll: true });
+  }
+
+  /** The live restaurant behind every title screen (built once, kept while you move between them). */
+  titleBackdrop() {
+    if (this.view === 'title' && this.previewScene && this.engine.active === this.previewScene) return;
     this.view = 'title';
-    clear(this.ui);
-    // A live restaurant behind the menu.
     const preview = new DemoService({ tickMs: 999999 });
     preview.fresh(); preview.recompute();
     this.previewScene = new RestaurantScene({ name: BRAND.name, ownerId: 'title' });
     this.previewScene.sync([...preview.state.structs.values()], { types: preview.state.types, ownerSpecies: this.prefs.species || 'cat', crewAway: false, jobs: new Map() });
     this.engine.setScene(this.previewScene);
-    this.engine.controls.autoRotate = true;
+    // A slow orbit, unless the player asked for less motion.
+    this.engine.controls.autoRotate = !matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.engine.controls.autoRotateSpeed = 0.35;
+  }
 
+  /** Replace the title card's contents. */
+  titlePage(...nodes) {
+    this.titleBackdrop();
+    clear(this.ui);
+    const card = h('div', { class: 'title-card' }, ...nodes);
+    this.ui.appendChild(h('div', { class: 'title' }, card));
+    return card;
+  }
+
+  /** A title page with a heading. */
+  titleSay(title, ...rest) {
+    return this.titlePage(h('div', { class: 'logo' }, h('h1', { style: { fontSize: '2rem' } }, title)), ...rest);
+  }
+
+  liveOk() { return this.flavor === 'full' && !!this.loadLive; }
+
+  /** Start New Game: critter, names, and demo kitchen or a real guild. */
+  showNewGame() {
     const st = { mode: 'demo', species: this.prefs.species || 'cat', name: this.prefs.name || '', restaurant: this.prefs.restaurant || '' };
-    const card = h('div', { class: 'title-card' });
-    const wrap = h('div', { class: 'title' }, card);
-    this.ui.appendChild(wrap);
-
+    const card = this.titlePage();
     const render = () => {
       const restore = holdFocus(card);
       clear(card);
@@ -106,134 +143,212 @@ export class App {
       card.append(h('div', { class: 'row2' },
         h('div', { class: 'field' }, h('label', { for: 'owner-name' }, 'Owner name'), nameIn),
         h('div', { class: 'field' }, h('label', { for: 'rest-name' }, 'Restaurant name'), restIn)));
-      const liveOk = this.flavor === 'full' && this.loadLive;
+      const liveOk = this.liveOk();
       card.append(h('div', { class: 'mode-cards' },
         h('button', { class: `mode-card ${st.mode === 'demo' ? 'on' : ''}`, onclick: () => { st.mode = 'demo'; render(); } }, h('b', {}, 'Demo kitchen'), h('small', {}, 'Plays offline against computer rivals, with the real combat rules.')),
         h('button', { class: `mode-card ${st.mode === 'live' ? 'on' : ''}`, disabled: !liveOk, onclick: () => { st.mode = 'live'; render(); } }, h('b', {}, 'Open for real'), h('small', {}, liveOk ? 'Join a Structs guild and take on real players.' : 'Run À la Structs on your machine to connect to a guild.'))));
-      card.append(h('button', { class: 'btn wide', onclick: () => this.start(st) }, st.mode === 'demo' ? 'Open the doors' : 'Connect to the guild'));
+      card.append(h('button', { class: 'btn wide', onclick: () => this.start(st) }, st.mode === 'demo' ? 'Open the doors' : 'Pick a restaurant group'));
+      card.append(h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
       restore();
     };
     render();
   }
 
-  async start(st) {
+  /** Continue: sign back in with a recovery phrase (or pick up the demo kitchen). */
+  showContinue(error = '', phrase = '') {
+    const demoSave = DemoService.hasSave();
+    const nodes = [];
+    if (this.liveOk()) {
+      const ta = h('textarea', { id: 'phrase', placeholder: 'twelve or twenty-four words…', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none' });
+      ta.value = phrase;
+      const err = h('div', { class: 'note warn', hidden: !error }, error);
+      const go = h('button', { class: 'btn wide', onclick: () => this.continueLive(ta.value, go, err) }, 'Sign in');
+      ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go.click(); } });
+      nodes.push(
+        h('div', { class: 'field' }, h('label', { for: 'phrase' }, 'Your recovery phrase'), ta,
+          h('small', {}, 'We’ll find your restaurant and sign this browser in. Your phrase never leaves this page.')),
+        err, go);
+    } else {
+      nodes.push(h('div', { class: 'note' }, 'Signing in to a guild needs À la Structs running on your machine.'));
+    }
+    if (demoSave) nodes.push(h('button', { class: 'btn wide sea', onclick: () => this.start({ mode: 'demo', species: this.prefs.species || 'cat', name: this.prefs.name || '', restaurant: this.prefs.restaurant || '' }, { resume: true }) }, 'Continue the demo kitchen'));
+    nodes.push(h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+    this.titleSay('Welcome back', ...nodes);
+    this.ui.querySelector('#phrase')?.focus({ preventScroll: true });
+  }
+
+  async start(st, { resume = false } = {}) {
     sfx.unlock(); sfx.open();
     this.prefs.species = st.species; this.prefs.name = st.name.trim(); this.prefs.restaurant = st.restaurant.trim();
     this.savePrefs();
-    this.engine.controls.autoRotate = false;
     if (st.mode === 'live') return this.startLive(st);
+    // A new game replaces the demo kitchen on this browser, so ask first.
+    if (!resume && DemoService.hasSave() && !st.confirmed) {
+      return this.confirm('Start a new demo kitchen?', 'Your current demo restaurant, staff and gold will be replaced. To keep playing it, go Back and choose Continue.', 'Start fresh', () => this.start({ ...st, confirmed: true }));
+    }
+    if (!resume) { this.prefs.welcomed = false; this.savePrefs(); }
     const svc = new DemoService({
       tickMs: this.prefs.tickMs || 3000, difficulty: this.prefs.difficulty || 'easy', rivalsMayChallenge: this.prefs.rivalsMayChallenge ?? true,
       profile: { name: this.prefs.name || 'You', species: st.species, restaurantName: this.prefs.restaurant || undefined },
-      firstIncoming: /rush/.test(location.hash) ? 6 : undefined,
+      firstIncoming: /rush/.test(location.hash) ? 6 : undefined, fresh: !resume,
     });
     await this.useService(svc);
     await svc.start();
-    if (this.prefs.restaurant) svc.state.restaurant.name = this.prefs.restaurant;
+    if (this.prefs.restaurant && !resume) svc.state.restaurant.name = this.prefs.restaurant;
     this.enterGame();
   }
 
   /* ── live guild login ─────────────────────────────────────────────────── */
 
-  async startLive(st) {
-    clear(this.ui);
-    const card = h('div', { class: 'title-card' });
-    this.ui.appendChild(h('div', { class: 'title' }, card));
-    const say = (title, ...rest) => { clear(card); card.append(h('div', { class: 'logo' }, h('h1', { style: { fontSize: '2rem' } }, title)), ...rest); };
-    say('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, 'Connecting to the guild’s kitchen.'));
-    let svc, mod;
-    try { mod = await this.loadLive(); } catch (e) {
+  /** Same-origin mode (GUILD_URL proxy, or served by the guild itself): no guild lookup. */
+  sameOriginGuild() { return !!((import.meta.env || {}).VITE_GUILD_PROXY); }
+
+  async loadLiveModule() {
+    try { return await this.loadLive(); } catch (e) {
       console.error(e);
-      return say('Couldn’t load the guild client', h('div', { class: 'note warn' }, String(e.message || e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+      this.titleSay('Couldn’t load the guild client', h('div', { class: 'note warn' }, String(e.message || e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+      return null;
     }
-    // Same-origin mode (GUILD_URL proxy, or served by the guild itself) skips the picker.
-    const sameOrigin = !!((import.meta.env || {}).VITE_GUILD_PROXY);
-    const guild = sameOrigin ? null : await this.pickGuild(mod, say);
-    if (!sameOrigin && !guild) return this.showTitle();
-    say('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${guild?.name || 'the guild'}’s kitchen.`));
+  }
+
+  /** Create the live service for a guild and connect. Resolves to whether a saved player signed in. */
+  async connectLive(mod, guild) {
+    const svc = new mod.LiveService({ workerUrl: mod.workerUrl, guild });
+    this.liveMod = mod;
+    await this.useService(svc);
+    return svc.start();
+  }
+
+  liveFailed(e, back = () => this.showTitle()) {
+    console.error(e);
+    const hint = this.sameOriginGuild() ? 'Check that the guild in GUILD_URL is running (see README).' : 'The guild’s services may be down, or may not accept requests from this page (CORS).';
+    this.titleSay('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${e.message || e}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: back }, 'Back'));
+  }
+
+  /** Start New Game → Open for real: pick a group, then get a fresh recovery phrase. */
+  async startLive() {
+    this.titleSay('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, 'Looking up restaurant groups.'));
+    const mod = await this.loadLiveModule();
+    if (!mod) return;
+    const guild = this.sameOriginGuild() ? null : await this.pickGuild(mod);
+    if (!this.sameOriginGuild() && !guild) return this.showNewGame();
+    this.titleSay('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${guild?.name || 'the guild'}’s kitchen.`));
+    let signedIn;
+    try { signedIn = await this.connectLive(mod, guild); } catch (e) { return this.liveFailed(e); }
+    if (signedIn) { this.applyProfile(); return this.enterGame(); }
+    const svc = this.svc;
+    const phrase = svc.newRecoveryPhrase();
+    const copy = h('button', { class: 'btn small ghost', onclick: () => { navigator.clipboard?.writeText(phrase).then(() => { copy.textContent = 'Copied'; }, () => {}); } }, 'Copy');
+    this.titleSay('Your recovery phrase',
+      h('div', { class: 'note warn' }, 'Write these words down somewhere safe. They are the only way back into your restaurant on another device. Nobody — including us — can recover them for you.'),
+      h('div', { class: 'phrase' }, phrase), copy,
+      h('button', { class: 'btn wide', onclick: async () => {
+        this.titleSay('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you up with the guild and scouting a location. This can take a minute.'));
+        try { await svc.signUp(phrase, this.prefs.name); this.applyProfile(); this.enterGame(); } catch (e) {
+          this.titleSay('Sign-up didn’t go through', h('div', { class: 'note warn' }, e.message), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
+        }
+      } }, 'I’ve saved it — open my restaurant'),
+      h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
+  }
+
+  /** Continue → Sign in: the phrase tells us the owner, the chain tells us their guild. */
+  async continueLive(raw, go, err) {
+    const phrase = String(raw || '').trim().toLowerCase().split(/\s+/).join(' ');
+    if (!phrase) return;
+    const fail = (m) => { err.textContent = m; err.hidden = false; go.disabled = false; go.textContent = 'Sign in'; };
+    go.disabled = true; go.textContent = 'Finding your restaurant…'; err.hidden = true;
+    let mod, guild = null;
     try {
-      svc = new mod.LiveService({ workerUrl: mod.workerUrl, guild });
-      this.liveMod = mod;
-      await this.useService(svc);
-      const signedIn = await svc.start();
-      if (signedIn) { this.applyProfile(); return this.enterGame(); }
+      mod = await this.loadLive();
+      if (!this.sameOriginGuild()) {
+        const address = await mod.addressForPhrase(phrase);
+        const pid = await mod.playerIdForAddress(address, mod.DEFAULT_REACTOR);
+        if (!pid) return fail('No restaurant uses this recovery phrase. To open one, go Back and choose Start New Game.');
+        const gid = await mod.guildIdForPlayer(pid, mod.DEFAULT_REACTOR);
+        if (!gid) return fail('This owner isn’t in a restaurant group, so there’s no guild to sign in to.');
+        guild = await mod.resolveGuild(gid, mod.DEFAULT_REACTOR);
+      }
+    } catch (e) { return fail(e.message || String(e)); }
+    this.titleSay('Signing you in…', h('p', { style: { textAlign: 'center' } }, `Registering this browser with ${guild?.name || 'your guild'}. Hang tight.`));
+    try {
+      const signedIn = await this.connectLive(mod, guild);
+      if (!signedIn) await this.svc.recover(phrase);
+      this.applyProfile(); this.enterGame();
     } catch (e) {
       console.error(e);
-      const hint = sameOrigin ? 'Check that the guild in GUILD_URL is running (see README).' : 'The guild’s services may be down, or may not accept requests from this page (CORS).';
-      return say('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${e.message || e}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
+      this.titleSay('That didn’t work', h('div', { class: 'note warn' }, e.message || String(e)), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Try again'));
     }
-    const guildName = svc.state.guildInfo?.name || 'this guild';
-    const choose = () => say(`Welcome to ${guildName}`,
-      h('p', { style: { textAlign: 'center', margin: 0 } }, 'Is this your first restaurant here?'),
-      h('div', { class: 'mode-cards' },
-        h('button', { class: 'mode-card', onclick: () => fresh() }, h('b', {}, 'I’m new'), h('small', {}, 'Open your first restaurant. You’ll get a recovery phrase to keep.')),
-        h('button', { class: 'mode-card', onclick: () => recover() }, h('b', {}, 'I already play'), h('small', {}, 'Sign in on this device with your recovery phrase.'))),
-      h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
-    const fresh = () => {
-      const phrase = svc.newRecoveryPhrase();
-      const copy = h('button', { class: 'btn small ghost', onclick: () => { navigator.clipboard?.writeText(phrase).then(() => { copy.textContent = 'Copied'; }, () => {}); } }, 'Copy');
-      say('Your recovery phrase',
-        h('div', { class: 'note warn' }, 'Write these words down somewhere safe. They are the only way back into your restaurant on another device. Nobody — including us — can recover them for you.'),
-        h('div', { class: 'phrase' }, phrase), copy,
-        h('button', { class: 'btn wide', onclick: async () => {
-          say('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you up with the guild and scouting a location. This can take a minute.'));
-          try { await svc.signUp(phrase, this.prefs.name); this.applyProfile(); this.enterGame(); } catch (e) { say('Sign-up didn’t go through', h('div', { class: 'note warn' }, e.message), h('button', { class: 'btn wide ghost', onclick: choose }, 'Back')); }
-        } }, 'I’ve saved it — open my restaurant'));
-    };
-    const recover = () => {
-      const ta = h('textarea', { id: 'phrase', placeholder: 'twelve or twenty-four words…', autocomplete: 'off', spellcheck: 'false' });
-      say('Sign in',
-        h('div', { class: 'field' }, h('label', { for: 'phrase' }, 'Recovery phrase'), ta, h('small', {}, 'This registers this browser as one of your devices. Your phrase never leaves this page.')),
-        h('button', { class: 'btn wide', onclick: async () => {
-          say('Checking your phrase…', h('p', { style: { textAlign: 'center' } }, 'Registering this device with the guild. Hang tight.'));
-          try { await svc.recover(ta.value); this.applyProfile(); this.enterGame(); } catch (e) { say('That didn’t work', h('div', { class: 'note warn' }, e.message), h('button', { class: 'btn wide ghost', onclick: recover }, 'Try again')); }
-        } }, 'Sign in'),
-        h('button', { class: 'btn wide ghost', onclick: choose }, 'Back'));
-    };
-    choose();
+  }
+
+  /** A phrase is saved on this browser: skip the menus and sign straight back in. */
+  async resumeLive(saved) {
+    this.titleSay('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you back in.'));
+    const signOut = () => { try { localStorage.removeItem('gameState'); } catch (e) { /* ignore */ } location.reload(); };
+    try {
+      const mod = await this.loadLive();
+      let guild = null;
+      if (!this.sameOriginGuild()) {
+        const gid = await mod.guildIdForPlayer(saved.playerId, mod.DEFAULT_REACTOR).catch(() => null) || mod.lastGuild()?.id;
+        if (!gid) throw new Error('Couldn’t find which restaurant group you play in');
+        guild = await mod.resolveGuild(gid, mod.DEFAULT_REACTOR);
+      }
+      if (!await this.connectLive(mod, guild)) throw new Error('Your saved sign-in wasn’t accepted');
+      this.applyProfile(); this.enterGame();
+    } catch (e) {
+      console.error(e);
+      this.titleSay('Couldn’t sign you back in', h('div', { class: 'note warn' }, `${e.message || e}.`),
+        h('button', { class: 'btn wide', onclick: () => location.reload() }, 'Try again'),
+        h('button', { class: 'btn wide ghost', onclick: () => this.confirm('Sign out on this browser?', 'You’ll need your recovery phrase to sign back in.', 'Sign out', signOut) }, 'Sign out'));
+    }
   }
 
   /**
-   * Choose a guild by id. Its services come from the guild's own published
-   * config (on-chain record → endpoint → services), not from this app.
+   * Choose a restaurant group. Each guild's services come from its own
+   * published guild.json; groups whose guild.json can't be read are left out.
    * Resolves to the resolved guild, or null on Back.
    */
-  pickGuild(mod, say) {
+  pickGuild(mod) {
     const env = import.meta.env || {};
-    const last = mod.lastGuild();
-    let chosen = this.prefs.guildId || last?.id || env.VITE_GUILD_ID || '0-1';
+    let chosen = this.prefs.guildId || mod.lastGuild()?.id || env.VITE_GUILD_ID || null;
     return new Promise((resolve) => {
-      const input = h('input', { id: 'guild-id', value: chosen, placeholder: '0-1', autocomplete: 'off', spellcheck: 'false', oninput: (e) => { chosen = e.target.value.trim(); } });
-      const list = h('div', { class: 'guild-list', role: 'listbox', 'aria-label': 'Guilds on the chain' }, h('small', {}, 'Looking up guilds on the chain…'));
+      const list = h('div', { class: 'guild-list', role: 'listbox', 'aria-label': 'Restaurant groups' }, h('small', {}, 'Looking up restaurant groups…'));
       const err = h('div', { class: 'note warn', hidden: true });
-      const go = h('button', { class: 'btn wide', onclick: async () => {
+      const go = h('button', { class: 'btn wide', disabled: true, onclick: async () => {
         if (!chosen) return;
-        go.disabled = true; go.textContent = 'Reading the guild’s config…'; err.hidden = true;
+        go.disabled = true; go.textContent = 'Reading the group’s details…'; err.hidden = true;
         try {
           const g = await mod.resolveGuild(chosen, mod.DEFAULT_REACTOR);
           this.prefs.guildId = g.id; this.savePrefs();
           resolve(g);
         } catch (e) {
           err.textContent = e.message || String(e); err.hidden = false;
-          go.disabled = false; go.textContent = 'Connect';
+          go.disabled = false; go.textContent = 'Join this group';
         }
-      } }, 'Connect');
-      say('Pick your restaurant group',
-        h('p', { style: { textAlign: 'center', margin: 0 } }, 'Every Structs guild publishes where its services live. Choose one and we’ll read it from there.'),
-        h('div', { class: 'field' }, h('label', { for: 'guild-id' }, 'Guild id'), input),
+      } }, 'Join this group');
+      this.titleSay('Pick your restaurant group',
+        h('p', { style: { textAlign: 'center', margin: 0 } }, 'Your restaurant opens in the group you join. You can play against anyone in town.'),
         list, err, go,
         h('button', { class: 'btn wide ghost', onclick: () => resolve(null) }, 'Back'));
-      mod.browsableGuilds(mod.DEFAULT_REACTOR).then((rows) => {
+      const pick = (id) => {
+        chosen = id; go.disabled = !id;
+        list.querySelectorAll('.guild-row').forEach((b) => { const on = b.dataset.id === id; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+      };
+      mod.browsableGuilds(mod.DEFAULT_REACTOR).then((all) => {
         clear(list);
-        if (!rows.length) { list.append(h('small', {}, 'No guilds found on the chain.')); return; }
+        // A guild whose guild.json can't be read can't be joined from here at all.
+        const rows = all.filter((r) => !r.unreadable && 'api' in r);
+        if (!rows.length) { list.append(h('small', {}, 'No restaurant groups are open right now. Try again in a little while.')); return; }
+        if (!rows.some((r) => r.ok && r.id === chosen)) chosen = rows.find((r) => r.ok)?.id || null;
         for (const r of rows) {
+          const d = (r.description || '').trim();
+          const about = r.ok ? (d.length > 120 ? `${d.slice(0, 120).replace(/\s+\S*$/, '')}…` : d) : r.why;
           list.append(h('button', {
-            class: `guild-row ${r.id === chosen ? 'on' : ''}`, role: 'option', 'aria-selected': r.id === chosen ? 'true' : 'false', disabled: !r.ok, title: r.ok ? (r.description || r.name) : r.why,
-            onclick: () => { chosen = r.id; input.value = r.id; list.querySelectorAll('.guild-row').forEach((b) => { const on = b.dataset.id === r.id; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); }); },
-            'data-id': r.id,
-          }, h('b', {}, r.name), h('small', {}, [r.id, r.tag && `[${r.tag}]`, r.why].filter(Boolean).join(' · '))));
+            class: 'guild-row', role: 'option', 'aria-selected': 'false', disabled: !r.ok, title: r.ok ? (r.description || r.name) : r.why, 'data-id': r.id,
+            onclick: () => pick(r.id),
+          }, h('b', {}, r.name), about ? h('small', {}, about) : null));
         }
-      }, (e) => { clear(list); list.append(h('small', {}, `Couldn’t list guilds (${e.message || e}). You can still type an id.`)); });
+        pick(chosen);
+      }, (e) => { clear(list); list.append(h('small', {}, `Couldn’t look up restaurant groups (${e.message || e}). Try again in a little while.`)); });
     });
   }
 
@@ -254,6 +369,7 @@ export class App {
   /* ── main game ────────────────────────────────────────────────────────── */
 
   enterGame() {
+    this.engine.controls.autoRotate = false;
     clear(this.ui);
     this.hudTop = h('div', { class: 'hud-top' });
     this.dock = h('nav', { class: 'dock', 'aria-label': 'Main menu' });

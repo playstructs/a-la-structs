@@ -74,12 +74,18 @@ export class DemoService extends Service {
     ];
     this.profile = opts.profile || {};
     this.firstIncoming = opts.firstIncoming;
+    this.startFresh = !!opts.fresh;   // Start New Game: ignore (and later overwrite) any old save
+  }
+
+  /** Is there a demo kitchen to continue? */
+  static hasSave() {
+    try { return localStorage.getItem(SAVE_KEY) != null || localStorage.getItem(OLD_SAVE_KEY) != null; } catch (e) { return false; }
   }
 
   /* ── lifecycle ────────────────────────────────────────────────────────── */
 
   async start() {
-    if (!this.load()) this.fresh();
+    if (this.startFresh || !this.load()) this.fresh();
     this.state.ready = true;
     this.state.lastTickAt = Date.now();
     this.nextIncoming = this.state.tick + (this.firstIncoming ?? this.raidGap(true));

@@ -166,6 +166,14 @@ export async function playerIdForAddress(address, reactor = DEFAULT_REACTOR) {
   } catch (e) { return null; }
 }
 
+/** The guild a player belongs to, or null. */
+export async function guildIdForPlayer(playerId, reactor = DEFAULT_REACTOR) {
+  const j = await lcd(`/structs/player/${encodeURIComponent(playerId)}`, reactor);
+  const p = j.Player || j.player || j;
+  const id = p?.guildId || p?.guild_id;
+  return id ? String(id) : null;
+}
+
 /** The guild answers its API with CORS for this page (GET /timestamp). False only on a CORS refusal. */
 export async function canReach(api) {
   try {
@@ -196,7 +204,7 @@ export async function browsableGuilds(reactor = DEFAULT_REACTOR) {
       if (reach === false) return { ...g, ok: false, why: 'guild API refuses this site (CORS)' };
       return { ...g, ok: true, why: reach === null ? 'guild API didn’t answer just now' : '' };
     } catch (e) {
-      return { id: String(r.id), name: `Guild ${r.id}`, endpoint: r.endpoint, ok: false, why: e.message };
+      return { id: String(r.id), name: `Guild ${r.id}`, endpoint: r.endpoint, ok: false, unreadable: true, why: e.message };
     }
   }));
   rows.sort((a, b) => (b.ok - a.ok) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));

@@ -66,6 +66,15 @@ export function liveEndpoints(overrides = {}) {
   };
 }
 
+/** The address a recovery phrase signs as. Throws a readable error for a mistyped phrase. */
+export async function addressForPhrase(mnemonic) {
+  let wallet;
+  try { wallet = await new WalletManager().createWallet(mnemonic.trim().toLowerCase().split(/\s+/).join(' ')); } catch (e) {
+    throw new Error('That isn’t a valid recovery phrase. Check the words and their order.');
+  }
+  return (await wallet.getAccounts())[0].address;
+}
+
 export class LiveService extends Service {
   /**
    * @param {object} [opts]
