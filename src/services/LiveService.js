@@ -75,6 +75,16 @@ export async function addressForPhrase(mnemonic) {
   return (await wallet.getAccounts())[0].address;
 }
 
+/** Make `new Worker(url)` for this one URL start a module worker. */
+function startAsModuleWorker(url) {
+  const Native = globalThis.Worker;
+  if (!Native || Native.moduleUrl === url) return;
+  globalThis.Worker = class extends Native {
+    static moduleUrl = url;
+    constructor(u, opts) { super(u, String(u) === url ? { ...opts, type: 'module' } : opts); }
+  };
+}
+
 export class LiveService extends Service {
   /**
    * @param {object} [opts]
@@ -95,7 +105,15 @@ export class LiveService extends Service {
   /* ── wiring (mirrors structs-webapp/src/js/index.js, without its screens) ─ */
 
   wire() {
-    if (this.opts.workerUrl) TASK.WORKER_PATH = this.opts.workerUrl;
+    if (this.opts.workerUrl) {
+      TASK.WORKER_PATH = this.opts.workerUrl;
+      // The dev server serves workers as ES modules (…?worker_file&type=module),
+      // but the core starts its proof-of-work worker as a classic script, which
+      // dies on its first import: hires never finish onboarding and recipes are
+      // never tested or perfected. Start that worker as a module instead.
+      // (`vite build` bundles it as a classic script, so this is dev only.)
+      if (/[?&]type=module\b/.test(this.opts.workerUrl)) startAsModuleWorker(this.opts.workerUrl);
+    }
 
     const gameState = this.gs = new GameState();
     globalThis.gameState = gameState;
