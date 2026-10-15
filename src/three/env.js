@@ -281,5 +281,24 @@ export function buildRestaurant({ name = 'Your Restaurant', ownerId = 'me' } = {
   add(P.car('#ffb3c6'), -7.5, 0, 13.2);
   add(P.car('#a0e7e5'), 9.5, 0, 16.2, Math.PI);
 
-  return { group: g, ground, chairs, stools, nameSign, ticks };
+  // ── What critters walk around: floor footprints of everything above, by
+  // the same numbers (rects {x0,x1,z0,z1}, circles {x,z,r}). Station gear is
+  // added by the scene as it's hired (see RestaurantScene.navGrid).
+  const rect = (cx, cz, w, d) => ({ x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 });
+  const obstacles = [
+    rect(0, -8.15, 24.4, 0.3), rect(-12.15, -0.75, 0.3, 14.9), rect(12.15, -0.75, 0.3, 14.9),   // back, left, right walls
+    rect(-5.5, 6.6, 13.0, 0.3), rect(8.2, 6.6, 7.8, 0.3), rect(1.0, 6.6, 0.3, 0.3), rect(4.2, 6.6, 0.3, 0.3),   // front railing, door posts
+    ...[[-12, -1.0], [0.6, 4.6], [5.8, 12]].map(([x0, x1]) => rect((x0 + x1) / 2, DIVIDER_Z, x1 - x0, 0.28)),  // divider (door gaps between)
+    rect(KITCHEN_SPLIT_X, -6.15, 0.26, 3.7),
+    rect((BAR.x0 + BAR.x1) / 2, BAR.z, BAR.x1 - BAR.x0 + 0.15, 0.95), rect(8.6, -1.2, 6.0, 0.4),       // bar counter, back shelf
+    ...STATIONS.space.map((st) => ({ x: st.prop.x, z: BAR.stoolZ, r: 0.22 })),                         // bar stools
+    ...TABLES.flatMap((t) => [{ x: t.x, z: t.z, r: 0.66 }, ...[-1, 1].map((sd) => ({ x: t.x + sd * 0.95, z: t.z + 0.05, r: 0.24 }))]),
+    { x: 11.4, z: -0.9, r: 0.26 }, { x: -11.3, z: 6.0, r: 0.26 }, { x: 0.3, z: 5.9, r: 0.26 },            // plants
+    ...[0, 1, 2, 3].flatMap((i) => [{ x: -10.2 + i * 2.9, z: -2.25, r: 0.22 }, { x: 3.2 + i * 2.35, z: -2.25, r: 0.22 }]),  // chef's-counter stools
+    rect(11.2, -2.6, 1.6, 0.5),                                                                          // dish rack
+    rect(-9.5, 7.3, 3.0, 0.45), rect(-5.0, 7.3, 3.0, 0.45), rect(8.8, 7.3, 2.4, 0.45),                  // flower boxes
+    rect(-1.4, 9.9, 1.6, 0.45), { x: -12.5, z: 10.4, r: 0.22 }, { x: 12.5, z: 10.4, r: 0.22 },          // bench, lamp posts
+  ];
+
+  return { group: g, ground, chairs, stools, nameSign, ticks, obstacles };
 }

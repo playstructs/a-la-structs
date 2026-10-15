@@ -17,7 +17,11 @@ const jitter = (v, r = 0.3) => V(v.x + (Math.random() - 0.5) * r, v.z + (Math.ra
 /** Spot on the dining-room side of the kitchen pass. */
 const passFront = () => V(PASS.x0 + 0.6 + Math.random() * (PASS.x1 - PASS.x0 - 1.2), PASS.z + 0.75);
 /** Spot on the kitchen side of the pass. */
-const passBack = () => V(PASS.x0 + 0.6 + Math.random() * (PASS.x1 - PASS.x0 - 1.2), PASS.z - 0.75);
+const passBack = () => {
+  // Chef's-counter stools line this side of the pass (x -4.4 is in its span): stand beside one, not on it.
+  const x = PASS.x0 + 0.6 + Math.random() * (PASS.x1 - PASS.x0 - 1.2);
+  return V(Math.abs(x + 4.4) < 0.55 ? -4.4 + Math.sign(x + 4.4 || 1) * 0.55 : x, PASS.z - 0.75);
+};
 
 function tableSide(scene) {
   const occupied = scene.occupiedChairs ? scene.occupiedChairs() : [];

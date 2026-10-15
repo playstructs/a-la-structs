@@ -10,6 +10,7 @@ import { Character } from '../Character.js';
 import { OUTFITS, casualOutfit } from '../outfits.js';
 import { STATION_PROPS, PROP_IS_STRUCT, onboardingBox, managerDesk } from '../props.js';
 import { FX } from '../fx.js';
+import { NavGrid } from '../nav.js';
 import { el, pips } from '../labels.js';
 import { dutyFor } from '../duties.js';
 import { V, STATIONS, COMMAND_SPOT, PLANET_SPOTS, CURB_SPOTS, route, DOOR, randomIn, zoneOf } from '../layout.js';
@@ -20,6 +21,8 @@ import { is, isCommand } from '../../game/model.js';
 import { AREAS } from '../../lexicon/areas.js';
 
 const tmpV = new THREE.Vector3();
+/** Floor mats and thin stands that critters may walk over. */
+const NAV_SKIP = new Set(['spinnerSpot', 'ringLight']);
 
 export class RestaurantScene extends EventTarget {
   /**
@@ -46,6 +49,7 @@ export class RestaurantScene extends EventTarget {
     this.ctx = { types: null };
     this.r = rng('ambient-' + (opts.ownerId || 'x'));
     this.awayNotice = null;
+    this.nav = null;          // walkable floor, rebuilt when gear comes or goes (navGrid)
   }
 
   addLights() {
@@ -95,6 +99,25 @@ export class RestaurantScene extends EventTarget {
   }
 
   exit() {}
+
+  /* ── walking around things ────────────────────────────────────────────── */
+
+  /** The walkable floor: building and furniture, plus every station, desk and delivery box placed right now. */
+  navGrid() {
+    if (this.nav) return this.nav;
+    const nav = new NavGrid(this.env.obstacles);
+    for (const a of this.actors.values()) {
+      if (a.prop && a.prop.visible !== false && !NAV_SKIP.has(a.role.station)) nav.addObject(a.prop);
+      if (a.box) nav.addObject(a.box);
+    }
+    return (this.nav = nav);
+  }
+
+  /** Points to walk from `from` to `to` around walls and furniture. */
+  route(from, to) { return this.navGrid().path(from, to) || route(from, to); }
+
+  /** Walk off down the street (left or right) from wherever they are. */
+  routeAway(from, dir, z = 9.4) { return [...this.route(from, V(16.5 * dir, z)), V(24 * dir, z)]; }
 
   /* ── timers that pause with the scene ─────────────────────────────────── */
 
@@ -182,6 +205,7 @@ export class RestaurantScene extends EventTarget {
     a.anchor = a.character ? a.character.anchor : this.propAnchor(a);
     a.label = this.makeLabel(a);
     this.actors.set(s.id, a);
+    this.nav = null;
     this.updateActor(a, s, t, true);
     return a;
   }
@@ -199,8 +223,9 @@ export class RestaurantScene extends EventTarget {
     const place = this.placement(s, t);
     a.place = place; a.home = place.stand; a.area = s.ambit; a.placementKey = this.placementKey(s, t);
     if (a.prop) a.prop.position.copy(place.prop);
+    this.nav = null;
     a.token++;
-    a.character.walkTo(route(a.character.position, place.stand), () => { a.character.face(place.face || 0); this.runDuty(a); });
+    a.character.walkTo(this.route(a.character.position, place.stand), () => { a.character.face(place.face || 0); this.runDuty(a); });
     a.struct = s;
     this.refreshLabel(a);
   }
@@ -224,10 +249,12 @@ export class RestaurantScene extends EventTarget {
       a.box.position.copy(a.role.kind === 'equipment' || !c ? a.place.prop : a.place.stand);
       a.box.userData.pick = { structId: s.id };
       this.env.group.add(a.box);
+      this.nav = null;
       if (a.prop) a.prop.visible = a.role.kind !== 'equipment';
       if (c) c.object.visible = false;
     } else if (!building && a.box) {
       this.env.group.remove(a.box); a.box = null;
+      this.nav = null;
       if (a.prop) a.prop.visible = true;
       if (c) { c.object.visible = true; c.hop(1); }
       this.fx.emit('confetti', tmpV.copy(a.place.stand).setY(1.2), { count: 18, spread: 1.2, up: 2.4 });
@@ -238,7 +265,7 @@ export class RestaurantScene extends EventTarget {
       c.setHidden(hidden);
       const wasOffline = prev && !is.online(prev);
       if (!building && !online) {
-        if (!c.sleeping || fresh) { a.token++; c.stop(); c.walkTo(route(c.position, a.home), () => { c.face(a.place.face || 0); c.sleep(true); }); }
+        if (!c.sleeping || fresh) { a.token++; c.stop(); c.walkTo(this.route(c.position, a.home), () => { c.face(a.place.face || 0); c.sleep(true); }); }
       } else if (!building && online && (fresh || wasOffline || c.sleeping)) {
         c.sleep(false); c.sit(false);
         if (a.side === 'host') this.runDuty(a);
@@ -254,6 +281,7 @@ export class RestaurantScene extends EventTarget {
     if (a.box) this.env.group.remove(a.box);
     if (a.label) { a.label.removeFromParent(); a.label.element.remove(); }
     this.actors.delete(a.id);
+    this.nav = null;
     if (this.selectedId === a.id) this.selectedId = null;
   }
 
@@ -350,7 +378,7 @@ export class RestaurantScene extends EventTarget {
     if ('hold' in step && !step.gesture) c.hold(step.hold);
     if (step.walk) {
       if (a.place.outside && zoneOf(step.walk) !== 'outside') { next(); return; }
-      c.walkTo(route(c.position, step.walk), next);
+      c.walkTo(this.route(c.position, step.walk), next);
       return;
     }
     if (step.gesture) {
@@ -405,7 +433,7 @@ export class RestaurantScene extends EventTarget {
     if (seated) seat();
     else {
       c.setPosition(DOOR.x + 4 + (this.r() - 0.5) * 6, 0, 9.8);
-      c.walkTo([V(DOOR.x, 9.4), ...route(V(DOOR.x, 6.0), chair.pos.clone().add(V(-chair.side * 0.4, 0.6)))], seat);
+      c.walkTo(this.route(c.position, chair.pos), seat);
     }
     return d;
   }
@@ -418,7 +446,7 @@ export class RestaurantScene extends EventTarget {
       d.seated = false; d.c.sit(false); d.c.loop(null);
       if (this.r() < 0.6) this.fx.emit('heart', tmpV.copy(d.c.position).setY(1.6), { count: 3 });
       const chair = d.chair; d.chair = null; chair.occupant = null;
-      d.c.walkTo([...route(d.c.position, V(DOOR.x, 6.2)), V(DOOR.x, 9.6), V(DOOR.x + (this.r() < 0.5 ? -18 : 18), 9.6)], () => this.removeAmbient(d));
+      d.c.walkTo(this.routeAway(d.c.position, this.r() < 0.5 ? -1 : 1), () => this.removeAmbient(d));
       this.after(3 + this.r() * 4, () => {
         const free = this.env.chairs.filter((c) => !c.occupant);
         if (free.length && this.mode !== 'challenge') this.spawnDiner(free[Math.floor(this.r() * free.length)], false);
@@ -438,13 +466,14 @@ export class RestaurantScene extends EventTarget {
       this.ambient.push(d);
       this.env.group.add(c.object);
       c.setPosition(DOOR.x - 6, 0, 9.8);
-      const spot = V(cashier.home.x + (this.r() - 0.5) * 0.4, 2.3);
-      c.walkTo([V(DOOR.x, 9.4), ...route(V(DOOR.x, 6.0), spot)], () => {
+      // Between two bar stools (they're 1.65 apart, in front of each station), not on one.
+      const spot = V(cashier.home.x + 0.82 + (this.r() - 0.5) * 0.2, 2.3);
+      c.walkTo(this.route(c.position, spot), () => {
         c.face(Math.PI);
         c.play('talk', 2.2, () => {
           c.hold(this.r() < 0.5 ? 'coffee' : 'croissant');
           this.fx.emit('coin', tmpV.copy(spot).setY(1.4), { count: 2 });
-          c.play('cheer', 0.7, () => c.walkTo([...route(c.position, V(DOOR.x, 6.2)), V(DOOR.x, 9.6), V(DOOR.x + 18, 9.8)], () => this.removeAmbient(d)));
+          c.play('cheer', 0.7, () => c.walkTo(this.routeAway(c.position, 1), () => this.removeAmbient(d)));
         });
       });
     }
@@ -461,8 +490,8 @@ export class RestaurantScene extends EventTarget {
     this.env.group.add(c.object);
     const dir = this.r() < 0.5 ? 1 : -1;
     const z = 9.4 + this.r() * 1.2;
-    c.setPosition(-26 * dir, 0, z);
-    c.walkTo([V(26 * dir, z)], () => this.removeAmbient(d));
+    c.setPosition(-24 * dir, 0, z);
+    c.walkTo([V(-16.5 * dir, z), ...this.routeAway(V(-16.5 * dir, z), dir, z)], () => this.removeAmbient(d));
     this.after(3 + this.r() * 6, () => this.passerBy());
   }
 

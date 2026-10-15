@@ -84,7 +84,7 @@ export class ChallengeScene extends RestaurantScene {
       c.loop(critic ? 'write' : 'talk');
       if (!this.firstLine) { this.firstLine = true; this.say(a, critic ? 'I’ll be the judge of that.' : 'Excuse me!'); }
     };
-    c.walkTo(route(V(DOOR.x, 6.0), spot), sitDown);
+    c.walkTo(this.route(c.position, spot), sitDown);
     setTimeout(() => {
       if (a.leaving || a.seatedDown || this.actors.get(s.id) !== a) return;
       c.stop(); c.setPosition(spot.x, 0, spot.z); sitDown();
@@ -106,7 +106,7 @@ export class ChallengeScene extends RestaurantScene {
     a.seatedDown = true; c.speed = 1.7;   // a new walk replaces the entrance
     c.loop(null); c.sit(false);
     this.say(a, `Let’s see the ${AREAS[area].name}…`, 1800);
-    c.walkTo(route(c.position, spot), () => { c.face(a.place.face); c.loop('write'); });
+    c.walkTo(this.route(c.position, spot), () => { c.face(a.place.face); c.loop('write'); });
     this.refreshLabel(a);
   }
 
@@ -174,7 +174,7 @@ export class ChallengeScene extends RestaurantScene {
       this.fx.emit('confetti', this.actorWorldPos(a, 1.4), { count: 14, spread: 1 });
       this.say(a, a.critic ? 'Exquisite. Five stars. We’re leaving!' : 'Perfect! Thank you!', 2500);
       c.play('cheer', 1.4, () => {
-        c.walkTo([...route(c.position, V(DOOR.x, 6.2)), V(DOOR.x, 9.6), V(DOOR.x + 20, 10)], () => this.removeActor(a));
+        c.walkTo(this.routeAway(c.position, 1), () => this.removeActor(a));
       });
     });
   }
@@ -195,7 +195,7 @@ export class ChallengeScene extends RestaurantScene {
       c.play('sad', 1.4, () => {
         this.say(a, 'I’ll go…', 1600);
         c.speed = 1.2;
-        c.walkTo([...route(c.position, V(DOOR.x, 6.2)), V(DOOR.x, 9.6), V(DOOR.x - 20, 10)], () => this.removeActor(a));
+        c.walkTo(this.routeAway(c.position, -1), () => this.removeActor(a));
       });
     });
   }
@@ -235,7 +235,7 @@ export class ChallengeScene extends RestaurantScene {
       if (blocker?.character && orig) {
         this.interrupt(blocker);
         const between = (orig.character ? orig.character.position : orig.home).clone();
-        blocker.character.walkTo([between.add(V(0.5, 0.5))], () => this.resume(blocker, 1.5));
+        blocker.character.walkTo(this.route(blocker.character.position, between.add(V(0.5, 0.5))), () => this.resume(blocker, 1.5));
         this.say(blocker, hostSide ? 'Let me take this one!' : 'I’ll handle it!', 1500);
       }
     }
