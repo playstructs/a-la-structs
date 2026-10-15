@@ -83,10 +83,7 @@ export function staffSheet(app, id) {
     const p = s.build?.progress ?? job?.progress ?? 0;
     body.push(h('div', {}, h('div', { class: 'section-title' }, kind === 'equipment' ? 'Delivery' : 'Onboarding'), h('div', { class: 'progress butter', style: { marginTop: '8px' } }, h('i', { style: { width: `${Math.round(p * 100)}%` } }))));
   }
-  if (mine && t.planetaryMining && t.planetaryMining !== 'noPlanetaryMining' && st.restaurant.undiscovered <= 0 && !app.readOnly) {
-    body.push(h('div', { class: 'note warn' }, 'Every recipe in this restaurant has been discovered. Open a new restaurant to keep experimenting — your crew comes along, but kitchen staff and equipment stay behind.',
-      h('div', {}, h('button', { class: 'btn small butter', style: { marginTop: '8px' }, onclick: () => app.confirm('Open a new restaurant?', 'Your crew moves with you. Kitchen staff and equipment stay at the old place.', 'Open it', () => app.act(() => svc.openNewRestaurant())) }, icon('store'), 'Open a new restaurant'))));
-  }
+  if (mine && t.planetaryMining && t.planetaryMining !== 'noPlanetaryMining' && st.restaurant.undiscovered <= 0 && !app.readOnly) body.push(newRestaurantNote(app));
   if (job && is.built(s) && (job.kind === 'mine' || job.kind === 'refine')) {
     body.push(h('div', {}, h('div', { class: 'section-title' }, job.label || role.job?.name || 'Working'), h('div', { class: 'progress', style: { marginTop: '8px' } }, h('i', { style: { width: `${Math.round((job.progress || 0) * 100)}%` } }))));
   }
@@ -101,7 +98,7 @@ export function staffSheet(app, id) {
       const row = h('div', { class: 'skill' },
         icon(isCustomer || (inChallenge && mine && ch.role === 'challenger') ? 'grumble' : 'plate'),
         h('div', {}, h('b', {}, act.name || 'Serve'), h('small', {}, `Reaches: ${reach} · ${CONTROL[w.control] || ''}${w.shots > 1 ? ` · ${w.shots} at once` : ''}${w.piercing ? ' · cuts through thick skin' : ''}`)),
-        h('span', { class: 'tagchip', title: `${w.charge} ${TERMS.charge}` }, icon('hustle'), String(w.charge)),
+        h('span', { class: 'tagchip', title: HUSTLE_NOTE(w.charge) }, icon('hustle'), String(w.charge)),
       );
       if (inChallenge && mine && is.online(s) && ch.status === 'ongoing') {
         const verb = ch.role === 'challenger' ? ACTIONS.attackAsGuest : ACTIONS.attackAsHost;
@@ -133,18 +130,19 @@ export function staffSheet(app, id) {
     if (!is.built(s)) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.cancelHire(s.id)) }, kind === 'equipment' ? words.cancelBuild.equipment : words.cancelBuild.staff));
     else {
       if (is.online(s)) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.clockOut(s.id)) }, kind === 'equipment' ? words.deactivate.equipment : words.deactivate.staff));
-      else foot.push(h('button', { class: 'btn small', onclick: () => app.act(() => svc.clockIn(s.id)) }, kind === 'equipment' ? words.activate.equipment : words.activate.staff, h('span', { class: 'tagchip' }, icon('hustle'), String(t.activateCharge || 0))));
+      else foot.push(h('button', { class: 'btn small', onclick: () => app.act(() => svc.clockIn(s.id)) }, kind === 'equipment' ? words.activate.equipment : words.activate.staff, h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.activateCharge || 0) }, icon('hustle'), String(t.activateCharge || 0))));
       if (t.canDefend && is.online(s)) {
         if (s.protects) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.uncover(s.id)) }, words.defenseClear));
         else foot.push(h('button', { class: 'btn sea small', onclick: () => app.beginCover(s.id) }, icon('shield'), words.defenseSet));
       }
-      if (t.unitDefenses === 'stealthMode' && is.online(s)) foot.push(h('button', { class: 'btn butter small', onclick: () => app.act(() => svc.blendIn(s.id, !is.hidden(s))) }, is.hidden(s) ? words.stealthOff : words.stealthOn, h('span', { class: 'tagchip' }, icon('hustle'), String(t.stealthActivateCharge || 0))));
+      if (t.unitDefenses === 'stealthMode' && is.online(s)) foot.push(h('button', { class: 'btn butter small', onclick: () => app.act(() => svc.blendIn(s.id, !is.hidden(s))) }, is.hidden(s) ? words.stealthOff : words.stealthOn, h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.stealthActivateCharge || 0) }, icon('hustle'), String(t.stealthActivateCharge || 0))));
       if (isCommand(t) && is.online(s)) {
         body.push(h('div', { class: 'section-title' }, `${ROLES['Command Ship'].drive.name} (${t.moveCharge} hustle)`));
         body.push(h('div', { class: 'tabs' }, ...possibleAreas(t).map((a) => h('button', { class: `chip-btn ${s.ambit === a ? 'on' : ''}`, disabled: s.ambit === a, onclick: () => app.act(() => svc.walkManager(a)) }, AREAS[a].name))));
       }
       if (t.generatingRate) {
-        const inp = h('input', { type: 'number', min: '1', value: '5', id: `invest-${s.id}`, style: { width: '90px' }, 'aria-label': 'Gold to invest' });
+        app.investDraft = app.investDraft || {};
+        const inp = h('input', { type: 'number', min: '1', value: app.investDraft[s.id] ?? '5', id: `invest-${s.id}`, style: { width: '90px' }, 'aria-label': 'Gold to invest', oninput: (e) => { app.investDraft[s.id] = e.target.value; } });
         body.push(h('div', { class: 'field' }, h('label', { for: `invest-${s.id}` }, `${TERMS.infuse} (you have ${gold(st.wallet.gold)})`),
           h('div', { style: { display: 'flex', gap: '8px' } }, inp, h('button', { class: 'btn butter small', onclick: () => app.act(() => svc.investGold(s.id, inp.value)) }, icon('gold'), 'Invest'))));
       }
@@ -161,8 +159,8 @@ export function hireSheet(app, section = 'space') {
   const tabs = h('div', { class: 'tabs' }, ...CATALOG_SECTIONS.map((sec) => h('button', { class: `chip-btn ${sec.key === section ? 'on' : ''}`, onclick: () => app.openSheet('hire', sec.key) }, sec.title)));
   const sec = CATALOG_SECTIONS.find((x) => x.key === section);
   const list = types.filter((t) => catalogSection(t) === section);
-  const body = [tabs, h('p', {}, `${sec.note}. Hiring costs hustle and needs spare cash for their wage. You have ${svc.hustle()} hustle and ${cash(svc.spareCash())} spare.`)];
-  if (!svc.manager()) body.push(h('div', { class: 'note warn' }, 'You need a Manager before anyone else can be hired.'));
+  const body = [tabs, h('p', {}, `${sec.note}. Each hire needs a minimum of hustle and, like every action, uses up all you have. They also need spare cash for their wage. You have ${svc.hustle()} hustle and ${cash(svc.spareCash())} spare.`)];
+  if (!svc.manager()) body.push(managerWanted(app));
   for (const t of list) {
     const role = roleOf(t);
     const areas = possibleAreas(t);
@@ -180,7 +178,7 @@ export function hireSheet(app, section = 'space') {
         h('div', { class: 'sub' }, skillNames.length ? skillNames.join(' · ') : role.job?.name || (t.generatingRate ? 'Brings in cash' : 'Restaurant gear')),
         h('p', {}, role.blurb)),
       h('div', { class: 'meta' },
-        h('span', { class: 'tagchip', title: TERMS.charge }, icon('hustle'), `${t.buildCharge} hustle`),
+        h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.buildCharge) }, icon('hustle'), `needs ${t.buildCharge}`),
         h('span', { class: 'tagchip', title: 'Wage per tick' }, icon('cash'), `${cash(t.passiveDraw)}/tick`),
         h('span', { class: 'tagchip', title: 'Onboarding time' }, icon('clock'), app.svc.mode === 'demo' ? fmtTicks(Math.max(2, Math.round(t.buildDifficulty / 90)), st.tickMs) : `difficulty ${t.buildDifficulty}`),
         t.buildLimit ? h('span', { class: 'tagchip' }, `max ${t.buildLimit}`) : null,
@@ -194,6 +192,25 @@ export function hireSheet(app, section = 'space') {
     body.push(card);
   }
   return { title: 'Hire & Buy', body };
+}
+
+const HUSTLE_NOTE = (n) => `Needs at least ${n} ${TERMS.charge.toLowerCase()}. Like every action, it uses up all you have.`;
+
+/** No Manager (fired in a challenge): offer a replacement, since nothing else can be hired without one. */
+function managerWanted(app) {
+  const svc = app.svc, t = svc.state.types.named('Command Ship');
+  const area = possibleAreas(t)[0];
+  const blocker = svc.hireBlocker(t, area);
+  return h('div', { class: 'note warn' }, h('b', {}, 'You need a Manager. '), 'Nobody else can be hired or bought, and your crew can’t go out, until you hire one.',
+    h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' } },
+      h('button', { class: 'btn small', disabled: !!blocker, onclick: () => app.hire(t.id, area) }, icon('hire'), 'Hire a new Manager',
+        h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.buildCharge) }, icon('hustle'), `needs ${t.buildCharge}`)),
+      blocker ? h('span', { class: 'why' }, blocker) : null));
+}
+
+function newRestaurantNote(app) {
+  return h('div', { class: 'note warn' }, 'Every recipe in this restaurant has been discovered. Open a new restaurant to keep experimenting — your crew comes along, but kitchen staff and equipment stay behind.',
+    h('div', {}, h('button', { class: 'btn small butter', style: { marginTop: '8px' }, onclick: () => app.confirm('Open a new restaurant?', 'Your crew moves with you. Kitchen staff and equipment stay at the old place.', 'Open it', () => app.act(() => app.svc.openNewRestaurant())) }, icon('store'), 'Open a new restaurant')));
 }
 
 /* ── Roster ─────────────────────────────────────────────────────────────── */
@@ -220,6 +237,7 @@ export function rosterSheet(app) {
     }
   }
   if (st.crew.status === 'away') body.unshift(h('div', { class: 'note warn' }, 'Your crew is out on a service challenge. Only your kitchen team and equipment are at the restaurant.'));
+  if (st.restaurant.undiscovered <= 0) body.unshift(newRestaurantNote(app));
   return { title: 'Your Staff', body };
 }
 
@@ -233,7 +251,7 @@ export function rivalsSheet(app, list, query = '') {
     h('p', {}, `Send your crew to a rival restaurant as customers. Complain until you can copy their recipes — but if they fully satisfy your Food Critic, the party goes home empty-handed.`),
     h('div', { class: 'field' }, h('label', { for: 'rival-search' }, 'Find a rival'), h('div', { style: { display: 'flex', gap: '8px' } }, search, h('button', { class: 'btn small sea', onclick: () => app.openSheet('rivals', search.value) }, 'Search'))),
   ];
-  const blocker = st.challenge && st.challenge.status === 'ongoing' ? 'You’re already in a service challenge.' : st.crew.status !== 'home' ? 'Your crew is out.' : !svc.manager() ? 'You need a Manager to lead the crew.' : null;
+  const blocker = st.challenge && st.challenge.status === 'ongoing' ? 'You’re already in a service challenge.' : st.crew.status !== 'home' ? 'Your crew is out.' : !svc.manager() ? 'You need a Manager to lead the crew. Hire a new one from Hire.' : null;
   if (blocker) body.push(h('div', { class: 'note warn' }, blocker));
   if (svc.mode === 'demo' && !blocker) {
     body.push(h('div', { class: 'note' }, h('b', {}, 'Practice defending: '), 'invite a rival crew to dine at your place right now.', ' ',
@@ -302,7 +320,10 @@ export function settingsSheet(app) {
 
   const foot = [];
   if (svc.mode === 'demo') foot.push(h('button', { class: 'btn ghost small', onclick: () => app.confirm('Start the demo kitchen over?', 'Your demo restaurant, staff and gold reset to the opening day.', 'Start over', () => { svc.reset(); app.closeSheet(); }) }, 'Start the demo over'));
-  foot.push(h('button', { class: 'btn ghost small', onclick: () => app.backToTitle() }, svc.mode === 'demo' ? 'Back to title' : 'Sign out'));
+  const midChallenge = svc.mode === 'demo' && st.challenge?.status === 'ongoing';
+  foot.push(h('button', { class: 'btn ghost small', onclick: () => (midChallenge
+    ? app.confirm('Leave mid-challenge?', st.challenge.role === 'defender' ? 'Leaving now forfeits the challenge: their crew copies your recipes.' : 'Leaving now forfeits the challenge: your crew comes home empty-handed.', 'Leave anyway', () => app.backToTitle())
+    : app.backToTitle()) }, svc.mode === 'demo' ? 'Back to title' : 'Sign out'));
   return { title: 'Settings', body, foot };
 }
 

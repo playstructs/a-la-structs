@@ -31,6 +31,20 @@ export class ChallengeScene extends RestaurantScene {
     this.clearAmbientInside();
   }
 
+  /**
+   * On a portrait phone the challenge banner sits under the top bar, so aim
+   * a little further back: the room moves down into the free space below it.
+   * (Anyone cropped off the sides is still in the target list.)
+   */
+  fit(engine) {
+    super.fit(engine);
+    if (engine.camera.aspect >= 0.8) return;
+    const shift = V(0, 0, -3.2);
+    engine.controls.target.add(shift);
+    engine.camera.position.add(shift);
+    engine.controls.update();
+  }
+
   placementKey(s, t) {
     if (this.sideOf(s) === 'guest') return `guest:${s.ambit}:${isCommand(t) ? 'critic' : s.slot}`;
     return super.placementKey(s, t);
@@ -54,15 +68,27 @@ export class ChallengeScene extends RestaurantScene {
     a.character = new Character({ species, outfit: OUTFITS[persona.outfit] || OUTFITS.casual, seed: critic ? s.owner : s.id, data: { structId: s.id }, scale: critic ? 1.12 : 1 });
     const c = a.character;
     this.env.group.add(c.object);
-    // They walk in from the street and take their seat.
-    c.setPosition(DOOR.x + (Math.random() - 0.5) * 3, 0, 10.5 + Math.random());
+    // They hurry in from the doorway and take their seat. The challenge is
+    // already running, so they mustn't stay bunched in the aisle (where the
+    // menu bar covers them): anyone still walking after a few real seconds
+    // (slow device, throttled frame clock) is put straight into their seat.
+    c.setPosition(DOOR.x + (Math.random() - 0.5) * 1.5, 0, 7.4 + Math.random() * 0.6);
+    c.speed = 4.5;
     const seated = !critic;
-    c.walkTo([V(DOOR.x, 9.4), ...route(V(DOOR.x, 6.0), spot)], () => {
+    const sitDown = () => {
+      if (a.leaving || a.seatedDown) return;
+      a.seatedDown = true;
+      c.speed = 1.7;
       c.face(a.place.face); c.object.rotation.y = a.place.face;
       if (seated) c.sit(true, CUSTOMER_SEAT[area]);
       c.loop(critic ? 'write' : 'talk');
       if (!this.firstLine) { this.firstLine = true; this.say(a, critic ? 'I’ll be the judge of that.' : 'Excuse me!'); }
-    });
+    };
+    c.walkTo(route(V(DOOR.x, 6.0), spot), sitDown);
+    setTimeout(() => {
+      if (a.leaving || a.seatedDown || this.actors.get(s.id) !== a) return;
+      c.stop(); c.setPosition(spot.x, 0, spot.z); sitDown();
+    }, 3500);
     a.anchor = c.anchor;
     a.label = this.makeLabel(a);
     this.actors.set(s.id, a);
@@ -77,6 +103,7 @@ export class ChallengeScene extends RestaurantScene {
     a.area = area; a.home = spot; a.place = { stand: spot, face: CUSTOMER_FACE[area] }; a.placementKey = this.placementKey(s, t);
     a.struct = s;
     const c = a.character;
+    a.seatedDown = true; c.speed = 1.7;   // a new walk replaces the entrance
     c.loop(null); c.sit(false);
     this.say(a, `Let’s see the ${AREAS[area].name}…`, 1800);
     c.walkTo(route(c.position, spot), () => { c.face(a.place.face); c.loop('write'); });

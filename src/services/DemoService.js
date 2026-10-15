@@ -82,13 +82,19 @@ export class DemoService extends Service {
     if (!this.load()) this.fresh();
     this.state.ready = true;
     this.state.lastTickAt = Date.now();
-    this.nextIncoming = this.state.tick + (this.firstIncoming ?? (70 + Math.floor(this.r() * 60)));
+    this.nextIncoming = this.state.tick + (this.firstIncoming ?? this.raidGap(true));
     this.timer = setInterval(() => this.step(), this.state.tickMs);
     this.recompute();
     this.emit(['all']);
+    if (this.forfeitNote) { this.toast(this.forfeitNote.text, this.forfeitNote.tone); this.forfeitNote = null; }
   }
 
-  async stop() { clearInterval(this.timer); this.timer = null; this.save(); }
+  /** Leaving mid-challenge forfeits it, so a reload can't dodge a losing defence. */
+  async stop() {
+    clearInterval(this.timer); this.timer = null;
+    if (this.chain && this.state.challenge?.status === 'ongoing') this.finishChallenge(this.state.challenge.role === 'defender' ? 'raidSuccessful' : 'attackerRetreated');
+    this.save();
+  }
 
   setSpeed(ms) {
     this.state.tickMs = ms;
@@ -138,10 +144,12 @@ export class DemoService extends Service {
 
   save() {
     try {
-      const s = this.state;
+      const s = this.state, ch = s.challenge;
+      // A save taken mid-challenge records it, so a reload settles it as a forfeit.
+      const forfeit = ch?.status === 'ongoing' ? { role: ch.role, guestName: ch.guest.name, restaurantName: ch.restaurantName } : null;
       localStorage.setItem(SAVE_KEY, JSON.stringify({
         v: 1, tick: s.tick, me: s.me, wallet: s.wallet, restaurant: s.restaurant, crew: { status: 'home', at: s.restaurant.id },
-        structs: [...s.structs.values()], jobs: [...s.jobs.entries()], seq: this.seq,
+        structs: [...s.structs.values()], jobs: [...s.jobs.entries()], seq: this.seq, forfeit,
       }));
     } catch (e) { /* storage may be unavailable */ }
   }
@@ -159,13 +167,33 @@ export class DemoService extends Service {
       if (d.v !== 1) return false;
       const s = this.state;
       s.tick = d.tick; s.me = d.me; s.wallet = d.wallet; s.restaurant = d.restaurant; s.crew = d.crew;
-      s.structs = new Map(d.structs.map((x) => [x.id, x]));
+      s.structs = new Map(d.structs.filter((x) => !is.destroyed(x)).map((x) => [x.id, { ...x, status: x.status & ~STATUS.HIDDEN }]));
       s.jobs = new Map(d.jobs || []);
       this.seq = d.seq || 100;
+      if (d.forfeit) this.settleForfeit(d.forfeit);
       if (this.profile.name) s.me.name = this.profile.name;
       if (this.profile.species) s.me.species = this.profile.species;
       return true;
     } catch (e) { return false; }
+  }
+
+  /** A challenge was still running when the page went away: settle it as a forfeit. */
+  settleForfeit(f) {
+    const s = this.state;
+    if (f.role === 'defender') {
+      const stolen = Math.max(0, s.wallet.recipes - this.frozenRecipes(this.myStructs()));
+      s.wallet.recipes -= stolen;
+      this.forfeitNote = { tone: 'bad', text: stolen
+        ? `You left during ${f.guestName}’s visit, so their crew copied ${stolen} of your recipes.`
+        : `You left during ${f.guestName}’s visit. They found no recipes to copy.` };
+    } else {
+      this.forfeitNote = { tone: 'info', text: `You left during the challenge at ${f.restaurantName}, so your crew came home empty-handed.` };
+    }
+  }
+
+  /** Recipes the host's Extra Freezers keep safe from copying. */
+  frozenRecipes(structs) {
+    return 4 * structs.filter((x) => { const t = this.typeOf(x); return t?.type === 'Ore Bunker' && is.built(x) && is.online(x) && !is.destroyed(x); }).length;
   }
 
   reset() { try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ } this.chain = null; this.state.challenge = null; this.fresh(); this.recompute(); this.emit(['all']); }
@@ -225,6 +253,7 @@ export class DemoService extends Service {
             j.progress = 0; s.restaurant.undiscovered--; s.wallet.recipes++;
             this.fx({ kind: 'job', structId: st.id, job: 'mine' });
             this.toast(`Chef ${nameFor(st.id)} discovered a new recipe!`, 'good', st.id);
+            if (s.restaurant.undiscovered === 0) this.toast('That was the last recipe to discover here. Open a new restaurant (Staff menu) to keep the gold coming.', 'info', st.id);
             what.push('wallet');
           }
           s.jobs.set(st.id, j);
@@ -252,6 +281,15 @@ export class DemoService extends Service {
     this.recompute();
     if (s.tick % 5 === 0) this.save();
     this.emit(what);
+  }
+
+  /**
+   * Ticks until the next rival drops in. "Gently" also means less often, and
+   * the first visit comes later so there's time to settle in.
+   */
+  raidGap(first = false) {
+    const [min, spread] = { easy: [320, 160], difficult: [220, 120], hard: [160, 120] }[this.difficulty] || [220, 120];
+    return Math.floor((first ? min * 0.6 : min) + this.r() * spread);
   }
 
   underChallenge() { return !!(this.state.challenge && this.state.challenge.role === 'defender'); }
@@ -572,7 +610,7 @@ export class DemoService extends Service {
 
   incomingChallenge() {
     const s = this.state;
-    this.nextIncoming = s.tick + 160 + Math.floor(this.r() * 120);
+    this.nextIncoming = s.tick + this.raidGap();
     if (s.crew.status !== 'home' || this.chain) return;
     const candidates = this.rivals.filter((r) => r.structs.some((x) => this.typeOf(x)?.type === COMMAND));
     if (!candidates.length) return;
@@ -607,6 +645,7 @@ export class DemoService extends Service {
       ? `Your crew sat down at ${host.restaurantName}.`
       : `${guest.name}’s crew sat down at your restaurant.`, 'info');
     this.fx({ kind: 'challengeStart', role });
+    this.save();
   }
 
   chlog(text, tone = 'info') {
@@ -682,10 +721,11 @@ export class DemoService extends Service {
     const nameOf = (id) => {
       const st = ch.structs.get(id) || this.state.structs.get(id);
       if (!st) return 'Someone';
-      const t = this.typeOf(st);
-      const hostSide = st.owner === ch.hostId;
-      return hostSide ? `${nameFor(id)} the ${roleOf(t).role}` : `the ${roleOf(t).customer?.persona || 'customer'} (${nameFor(id)})`;
+      const role = roleOf(this.typeOf(st));
+      if (st.owner !== ch.hostId) return `the ${role.customer?.persona || 'customer'} (${nameFor(id)})`;
+      return role.kind === 'equipment' ? `the ${role.role}` : `${nameFor(id)} the ${role.role}`;
     };
+    const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
     switch (ev.category) {
       case 'struct_attack': {
         const d = ev.detail;
@@ -695,24 +735,25 @@ export class DemoService extends Service {
         const action = (attackerIsHost ? role.serve : role.complain)?.[d.weaponSystem];
         const last = d.eventAttackShotDetail[d.eventAttackShotDetail.length - 1] || {};
         const target = nameOf(last.targetStructId);
-        let text = `${nameOf(d.attackerStructId)} ${action?.line || (attackerIsHost ? 'served' : 'complained to')} ${target}`;
+        let text = `${cap(nameOf(d.attackerStructId))} ${action?.line || (attackerIsHost ? 'served' : 'complained to')} ${target}`;
         if (last.evaded) text += attackerIsHost ? ' — but they changed their mind.' : ' — but it was shrugged off.';
         else if (last.blocked) text += ` — ${nameOf(last.blockedByStructId)} stepped in.`;
-        else if (last.targetDestroyed) text += attackerIsHost ? ' — fully satisfied! They’re heading out happy.' : ' — and that was the last straw. Fired!';
+        else if (last.targetDestroyed) text += attackerIsHost ? ' — fully satisfied! They’re heading out happy.'
+          : roleOf(this.typeOf(ch.structs.get(last.targetStructId) || {})).kind === 'equipment' ? ' — and that broke it!' : ' — and that was the last straw. Fired!';
         else text += '.';
         this.chlog(text, attackerIsHost ? 'good' : 'bad');
         break;
       }
       case 'struct_defense_add':
         this.fx({ kind: 'defense', defender: ev.detail.defender_struct_id, protected: ev.detail.protected_struct_id, on: true });
-        this.chlog(`${nameOf(ev.detail.defender_struct_id)} is now covering ${nameOf(ev.detail.protected_struct_id)}.`);
+        this.chlog(`${cap(nameOf(ev.detail.defender_struct_id))} is now covering ${nameOf(ev.detail.protected_struct_id)}.`);
         break;
       case 'struct_defense_remove':
         this.fx({ kind: 'defense', defender: ev.detail.defender_struct_id, protected: ev.detail.protected_struct_id, on: false });
         break;
       case 'struct_move':
         this.fx({ kind: 'move', structId: ev.detail.struct_id, ambit: ev.detail.ambit });
-        this.chlog(`${nameOf(ev.detail.struct_id)} walked over to the ${AREAS[ev.detail.ambit]?.name}.`);
+        this.chlog(`${cap(nameOf(ev.detail.struct_id))} walked over to the ${AREAS[ev.detail.ambit]?.name}.`);
         break;
       case 'struct_status': {
         const was = ev.detail.status_old, now = ev.detail.status;
@@ -771,11 +812,19 @@ export class DemoService extends Service {
     const iWasGuest = ch.role === 'challenger';
     let text, tone;
     const hostRecipes = iWasGuest ? this.rival.recipes : s.wallet.recipes;
-    const freezers = (iWasGuest ? ch.hostStructs : this.myStructs()).filter((x) => { const t = this.typeOf(x); return t?.type === 'Ore Bunker' && is.built(x) && is.online(x) && !is.destroyed(x); }).length;
-    const stolen = status === 'raidSuccessful' ? Math.max(0, hostRecipes - freezers * 4) : 0;
+    const frozen = this.frozenRecipes(iWasGuest ? ch.hostStructs : this.myStructs());
+    const stolen = status === 'raidSuccessful' ? Math.max(0, hostRecipes - frozen) : 0;
+    const kept = frozen && hostRecipes ? (iWasGuest ? ' Their Extra Freezer kept some safe.' : ' Your Extra Freezer kept some safe.') : '';
     if (status === 'raidSuccessful') {
-      if (iWasGuest) { s.wallet.recipes += stolen; this.rival.recipes -= stolen; text = `You copied ${stolen} recipe${stolen === 1 ? '' : 's'} from ${ch.restaurantName}!`; tone = 'good'; }
-      else { s.wallet.recipes -= stolen; text = `${ch.guest.name}’s crew copied ${stolen} of your recipes.${freezers ? ' Your Extra Freezer kept some safe.' : ''}`; tone = 'bad'; }
+      if (iWasGuest) {
+        s.wallet.recipes += stolen; this.rival.recipes -= stolen;
+        text = stolen ? `You copied ${stolen} recipe${stolen === 1 ? '' : 's'} from ${ch.restaurantName}!${kept}` : `You stayed the whole service, but there were no recipes to copy at ${ch.restaurantName}.${kept}`;
+        tone = stolen ? 'good' : 'info';
+      } else {
+        s.wallet.recipes -= stolen;
+        text = stolen ? `${ch.guest.name}’s crew copied ${stolen} of your recipes.${kept}` : `${ch.guest.name}’s crew stayed the whole service, but found no recipes to copy.${kept}`;
+        tone = stolen ? 'bad' : 'info';
+      }
     } else if (status === 'attackerDefeated') {
       text = iWasGuest ? 'Your Food Critic was satisfied and the party went home. No recipes this time.' : 'You satisfied their Food Critic — the whole party went home happy. Your recipes are safe!';
       tone = iWasGuest ? 'bad' : 'good';
@@ -795,6 +844,7 @@ export class DemoService extends Service {
       st.health = c.health; st.status = c.status & ~STATUS.HIDDEN; st.protects = null;
       if (is.destroyed(st)) s.structs.delete(st.id);
     }
+    if (!this.manager()) this.toast('Your Manager was fired! Hire a new one from Hire before anyone else can be hired or bought.', 'bad');
     if (this.rival) {
       this.rival.structs = this.rival.structs.filter((x) => { const c = chain.structs[x.id]; if (!c) return true; x.health = c.health; return !chain.isDestroyed(c); });
       // A defeated rival hires replacements eventually; keep them playable.

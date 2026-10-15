@@ -79,7 +79,8 @@ export class Service extends EventTarget {
    */
   hireBlocker(type, ambit) {
     if (!type) return 'Unknown role';
-    if (type.type === COMMAND) return 'Every restaurant has exactly one Manager';
+    // A fired Manager can be replaced (on chain, a destroyed Command Ship is rebuilt).
+    if (type.type === COMMAND && this.manager()) return 'Every restaurant has exactly one Manager';
     if (type.buildLimit > 0 && this.countOf(type) >= type.buildLimit) return `You already have ${type.buildLimit === 1 ? 'one' : type.buildLimit}`;
     if (type.category === 'planet') {
       if (!this.manager()) return 'Hire a Manager first';

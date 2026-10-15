@@ -217,7 +217,10 @@ button { font: inherit; color: inherit; }
 .ch-log div { background: rgba(255,250,240,.95); border-radius: 14px; padding: 7px 11px; font-size: .84rem; box-shadow: 0 3px 0 rgba(122,86,56,.14); }
 .ch-log div.good { border-left: 5px solid var(--leaf); }
 .ch-log div.bad { border-left: 5px solid var(--berry); }
-.targeting-hint { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 104px); transform: translateX(-50%); background: var(--ink); color: #fff; font-family: var(--display); padding: 10px 16px; border-radius: 999px; z-index: 8; display: flex; gap: 10px; align-items: center; box-shadow: var(--shadow); max-width: calc(100vw - 32px); }
+.targeting-hint { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 104px); transform: translateX(-50%); background: var(--ink); color: #fff; font-family: var(--display); padding: 10px 16px; border-radius: 22px; z-index: 8; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; box-shadow: var(--shadow); width: max-content; max-width: min(640px, calc(100vw - 32px)); }
+.targeting-hint .targets { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; width: 100%; max-height: 32vh; overflow-y: auto; }
+.targeting-hint .targets .chip-btn { font-family: var(--body); font-size: .82rem; }
+.targeting-hint .targets small { opacity: .75; }
 
 /* ── modal ───────────────────────────────────────────────────────────── */
 .modal-back { position: absolute; inset: 0; background: rgba(74, 52, 40, .35); display: grid; place-items: center; z-index: 20; padding: 16px; animation: fadeIn .2s; }
@@ -310,7 +313,8 @@ table.gloss td:last-child { color: var(--muted); }
   .dock button .icon { width: 28px; height: 28px; }
   .announcer { bottom: calc(env(safe-area-inset-bottom, 0px) + 92px); left: 8px; }
   .announcer img { width: 44px; height: 44px; }
-  .ch-banner { top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 92px); }
+  .ch-banner { top: calc(env(safe-area-inset-top, 0px) + 150px); width: calc(100vw - 20px); padding: 8px 12px; }
+  .ch-banner p { font-size: .8rem; }
   .in-challenge .announcer { bottom: calc(env(safe-area-inset-bottom, 0px) + 250px); }
   .targeting-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 96px); border-radius: 22px; }
   .targeting .ch-banner { display: none; }

@@ -18,7 +18,7 @@ export const ROLES = {
     role: 'Manager', kind: 'staff', display: 'station', outfit: 'manager', station: 'managerDesk', duty: 'manage',
     blurb: 'Runs the floor. If the Manager isn’t in, nothing new gets hired or bought.',
     serve: {
-      primaryWeapon: { name: 'Personal Touch', dish: 'cake', line: 'handled it personally' },
+      primaryWeapon: { name: 'Personal Touch', dish: 'cake', line: 'personally looked after' },
     },
     complain: {
       primaryWeapon: { name: 'Scathing Review', line: 'wrote a scathing note about' },

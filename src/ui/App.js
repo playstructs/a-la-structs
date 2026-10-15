@@ -10,7 +10,7 @@ import { TownScene } from '../three/scenes/TownScene.js';
 import { portrait } from '../three/portraits.js';
 import { DemoService } from '../services/DemoService.js';
 import { Hangout, botsFromMembers } from '../services/Hangout.js';
-import { h, clear, icon, esc } from './dom.js';
+import { h, clear, icon, holdFocus } from './dom.js';
 import * as Panels from './panels.js';
 import { sfx } from '../audio/sfx.js';
 import { BRAND, TERMS, ACTIONS, CHALLENGE_STATUS } from '../lexicon/terms.js';
@@ -60,7 +60,13 @@ export class App {
     this.engine = new Engine(this.stage, { quality: this.prefs.quality || 'high' });
     sfx.setEnabled(this.prefs.sound !== false);
     window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
-    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (this.targeting) this.endTargeting(); else this.closeSheet(); } });
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const pop = [...this.ui.querySelectorAll('.modal-back')].pop();
+      if (pop) [...pop.querySelectorAll('.modal button')].pop()?.click();
+      else if (this.targeting) this.endTargeting();
+      else this.closeSheet();
+    });
     this.showTitle();
   }
 
@@ -84,6 +90,7 @@ export class App {
     this.ui.appendChild(wrap);
 
     const render = () => {
+      const restore = holdFocus(card);
       clear(card);
       card.append(
         h('div', { class: 'logo' }, h('h1', {}, 'À la ', h('span', {}, 'Structs')), h('p', {}, BRAND.tagline)),
@@ -104,6 +111,7 @@ export class App {
         h('button', { class: `mode-card ${st.mode === 'demo' ? 'on' : ''}`, onclick: () => { st.mode = 'demo'; render(); } }, h('b', {}, 'Demo kitchen'), h('small', {}, 'Plays offline against computer rivals, with the real combat rules.')),
         h('button', { class: `mode-card ${st.mode === 'live' ? 'on' : ''}`, disabled: !liveOk, onclick: () => { st.mode = 'live'; render(); } }, h('b', {}, 'Open for real'), h('small', {}, liveOk ? 'Join a Structs guild and take on real players.' : 'Run À la Structs on your machine to connect to a guild.'))));
       card.append(h('button', { class: 'btn wide', onclick: () => this.start(st) }, st.mode === 'demo' ? 'Open the doors' : 'Connect to the guild'));
+      restore();
     };
     render();
   }
@@ -136,13 +144,13 @@ export class App {
     let svc, mod;
     try { mod = await this.loadLive(); } catch (e) {
       console.error(e);
-      return say('Couldn’t load the guild client', h('div', { class: 'note warn' }, esc(e.message || e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+      return say('Couldn’t load the guild client', h('div', { class: 'note warn' }, String(e.message || e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
     }
     // Same-origin mode (GUILD_URL proxy, or served by the guild itself) skips the picker.
     const sameOrigin = !!((import.meta.env || {}).VITE_GUILD_PROXY);
     const guild = sameOrigin ? null : await this.pickGuild(mod, say);
     if (!sameOrigin && !guild) return this.showTitle();
-    say('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${esc(guild?.name || 'the guild')}’s kitchen.`));
+    say('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${guild?.name || 'the guild'}’s kitchen.`));
     try {
       svc = new mod.LiveService({ workerUrl: mod.workerUrl, guild });
       this.liveMod = mod;
@@ -152,7 +160,7 @@ export class App {
     } catch (e) {
       console.error(e);
       const hint = sameOrigin ? 'Check that the guild in GUILD_URL is running (see README).' : 'The guild’s services may be down, or may not accept requests from this page (CORS).';
-      return say('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${esc(e.message || e)}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
+      return say('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${e.message || e}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
     }
     const guildName = svc.state.guildInfo?.name || 'this guild';
     const choose = () => say(`Welcome to ${guildName}`,
@@ -169,7 +177,7 @@ export class App {
         h('div', { class: 'phrase' }, phrase), copy,
         h('button', { class: 'btn wide', onclick: async () => {
           say('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you up with the guild and scouting a location. This can take a minute.'));
-          try { await svc.signUp(phrase, this.prefs.name); this.applyProfile(); this.enterGame(); } catch (e) { say('Sign-up didn’t go through', h('div', { class: 'note warn' }, esc(e.message)), h('button', { class: 'btn wide ghost', onclick: choose }, 'Back')); }
+          try { await svc.signUp(phrase, this.prefs.name); this.applyProfile(); this.enterGame(); } catch (e) { say('Sign-up didn’t go through', h('div', { class: 'note warn' }, e.message), h('button', { class: 'btn wide ghost', onclick: choose }, 'Back')); }
         } }, 'I’ve saved it — open my restaurant'));
     };
     const recover = () => {
@@ -178,7 +186,7 @@ export class App {
         h('div', { class: 'field' }, h('label', { for: 'phrase' }, 'Recovery phrase'), ta, h('small', {}, 'This registers this browser as one of your devices. Your phrase never leaves this page.')),
         h('button', { class: 'btn wide', onclick: async () => {
           say('Checking your phrase…', h('p', { style: { textAlign: 'center' } }, 'Registering this device with the guild. Hang tight.'));
-          try { await svc.recover(ta.value); this.applyProfile(); this.enterGame(); } catch (e) { say('That didn’t work', h('div', { class: 'note warn' }, esc(e.message)), h('button', { class: 'btn wide ghost', onclick: recover }, 'Try again')); }
+          try { await svc.recover(ta.value); this.applyProfile(); this.enterGame(); } catch (e) { say('That didn’t work', h('div', { class: 'note warn' }, e.message), h('button', { class: 'btn wide ghost', onclick: recover }, 'Try again')); }
         } }, 'Sign in'),
         h('button', { class: 'btn wide ghost', onclick: choose }, 'Back'));
     };
@@ -225,7 +233,7 @@ export class App {
             'data-id': r.id,
           }, h('b', {}, r.name), h('small', {}, [r.id, r.tag && `[${r.tag}]`, r.why].filter(Boolean).join(' · '))));
         }
-      }, (e) => { clear(list); list.append(h('small', {}, `Couldn’t list guilds (${esc(e.message || e)}). You can still type an id.`)); });
+      }, (e) => { clear(list); list.append(h('small', {}, `Couldn’t list guilds (${e.message || e}). You can still type an id.`)); });
     });
   }
 
@@ -238,9 +246,9 @@ export class App {
   async useService(svc) {
     if (this.svc) { this.svc.stop?.(); }
     this.svc = svc;
-    svc.addEventListener('change', (e) => this.onChange(e.detail.what));
-    svc.addEventListener('fx', (e) => this.onFx(e.detail));
-    svc.addEventListener('toast', (e) => this.announce(e.detail));
+    svc.addEventListener('change', (e) => { if (this.svc === svc) this.onChange(e.detail.what); });
+    svc.addEventListener('fx', (e) => { if (this.svc === svc) this.onFx(e.detail); });
+    svc.addEventListener('toast', (e) => { if (this.svc === svc) this.announce(e.detail); });
   }
 
   /* ── main game ────────────────────────────────────────────────────────── */
@@ -259,8 +267,8 @@ export class App {
     this.startHangout();
     if (!this.prefs.welcomed) {
       this.prefs.welcomed = true; this.savePrefs();
-      this.modal(icon('store', 'big-icon'), `Welcome to ${esc(this.svc.state.restaurant.name)}!`,
-        `Your crew is already at work. Tap anyone to see what they do. Hire more help from the shop, keep your Chef discovering recipes and your Sous Chef turning them into gold — and when you’re ready, send your crew across town for a service challenge.`,
+      this.modal(icon('store', 'big-icon'), `Welcome to ${this.svc.state.restaurant.name}!`,
+        `Your crew is already at work. Tap anyone (or open Staff) to see what they do. Hire more help, keep your Chef discovering recipes and your Sous Chef turning them into gold — and when you’re ready, send your crew across town for a service challenge. Rival crews drop in too: practise defending from Rivals, or turn visits off in Settings.`,
         [['Let’s cook', null]]);
     }
     this.hudTimer = setInterval(() => this.renderHud(), 500);
@@ -297,7 +305,7 @@ export class App {
       this.engine.setScene(opts.scene);
       this.readOnly = true;
       this.peekStructs = new Map(opts.structs.map((x) => [x.id, x]));
-      this.overlay.appendChild(h('div', { class: 'peek-banner' }, h('span', {}, opts.rival ? `Sizing up ${esc(opts.title)}` : `Visiting ${esc(opts.title)}`),
+      this.overlay.appendChild(h('div', { class: 'peek-banner' }, h('span', {}, opts.rival ? `Sizing up ${opts.title}` : `Visiting ${opts.title}`),
         opts.rival && opts.member ? h('button', { class: 'btn small berry', onclick: () => this.challenge(opts.member) }, 'Send the crew') : null,
         h('button', { class: 'btn small ghost', onclick: () => this.setView(opts.from || 'home') }, icon('back'), 'Leave')));
     }
@@ -418,12 +426,20 @@ export class App {
       ['settings', 'gear', 'Settings', () => this.openSheet('settings')],
     ];
     if (ch) items.splice(1, 0, ['challenge', 'grumble', 'Challenge', () => this.setView('challenge')]);
+    // Only one tab is current: the open sheet, else the view.
+    const current = this.sheet && items.some(([k]) => k === this.sheet.kind) ? this.sheet.kind : this.view;
+    const alert = ch?.status === 'ongoing' && this.view !== 'challenge';
+    const sig = `${items.map(([k]) => k).join()}|${current}|${alert}`;
+    if (this.dockSig === sig && this.dock.childElementCount) return;
+    this.dockSig = sig;
+    const restore = holdFocus(this.dock);
     clear(this.dock);
     for (const [key, ic, label, fn] of items) {
-      const on = (key === this.view) || (this.sheet && this.sheet.kind === key);
-      const b = h('button', { class: `${on ? 'on' : ''} ${key === 'challenge' && ch?.status === 'ongoing' && this.view !== 'challenge' ? 'alert' : ''}`, onclick: () => { sfx.click(); fn(); } }, icon(ic), label);
+      const on = key === current;
+      const b = h('button', { class: `${on ? 'on' : ''} ${key === 'challenge' && alert ? 'alert' : ''}`, 'aria-current': on ? 'page' : null, onclick: () => { sfx.click(); fn(); } }, icon(ic), label);
       this.dock.appendChild(b);
     }
+    restore();
   }
 
   /* ── announcer ────────────────────────────────────────────────────────── */
@@ -474,6 +490,7 @@ export class App {
 
   renderSheet({ title, body, foot }) {
     const scroll = this.sheetEl?.querySelector('.body')?.scrollTop || 0;
+    const restore = holdFocus(this.sheetEl);
     const same = this.sheetEl && this.sheetEl.dataset.kind === this.sheet.kind && this.sheetEl.dataset.arg === String(this.sheet.arg ?? '');
     this.sheetEl?.remove();
     const el = h('section', { class: 'sheet', 'aria-label': title, 'data-kind': this.sheet.kind, 'data-arg': String(this.sheet.arg ?? '') },
@@ -484,6 +501,7 @@ export class App {
     this.ui.appendChild(el);
     this.sheetEl = el;
     if (same) el.querySelector('.body').scrollTop = scroll;
+    restore(el);
   }
 
   closeSheet() {
@@ -516,8 +534,20 @@ export class App {
   }
 
   selectStruct(id) {
+    // In a challenge, crew on the floor are picked there instead of leaving it.
+    if (this.view === 'challenge' && this.svc.state.challenge?.structs.has(id)) return this.challengeScene.select(id);
     if (this.view !== 'home') this.setView('home');
     this.homeScene.select(id);
+  }
+
+  /** "Mochi the Barista", "the Soft-Serve Machine", "Food Critic (Mochi)" — for buttons and lists. */
+  whoIs(id) {
+    const s = this.svc.state, ch = s.challenge;
+    const st = ch?.structs.get(id) || s.structs.get(id);
+    if (!st) return 'Someone';
+    const t = s.types.get(st.typeId), role = roleOf(t);
+    if (ch && st.owner === ch.guestId) return `${isCommand(t) ? 'Food Critic' : role.customer?.persona || 'Customer'} (${nameFor(id)})`;
+    return role.kind === 'equipment' ? role.role : `${nameFor(id)} the ${role.role}`;
   }
 
   beginServe(attackerId, ws) {
@@ -531,7 +561,7 @@ export class App {
     }
     if (!valid.size) { this.announce({ text: 'Nobody they can reach right now.', tone: 'bad' }); return; }
     const cost = weaponField(s.types.get(ch.structs.get(attackerId).typeId), ws, 'Charge') || 0;
-    this.startTargeting({ kind: 'serve', sourceId: attackerId, ws, valid, hint: `${ch.role === 'challenger' ? 'Who should they complain to?' : 'Who should they serve?'} (${cost} hustle — goes out next tick)` });
+    this.startTargeting({ kind: 'serve', sourceId: attackerId, ws, valid, hint: `${ch.role === 'challenger' ? 'Who should they complain to?' : 'Who should they serve?'} (needs ${cost} hustle — goes out next tick)` });
   }
 
   beginCover(defenderId) {
@@ -548,8 +578,17 @@ export class App {
     document.body.classList.add('targeting');
     this.closeSheetQuiet();
     this.hintEl?.remove();
-    this.hintEl = h('div', { class: 'targeting-hint' }, h('span', {}, t.hint), h('button', { class: 'btn small ghost', onclick: () => this.endTargeting() }, 'Cancel'));
+    // Every valid target is also a button, so nobody has to find (or reach) it in the 3D room.
+    const pool = this.view === 'challenge' && this.svc.state.challenge ? this.svc.state.challenge.structs : this.svc.state.structs;
+    const targets = [...t.valid].map((id) => pool.get(id)).filter(Boolean).map((x) => {
+      const need = t.kind === 'serve' ? (x.owner === this.svc.state.challenge?.guestId ? `${x.maxHealth - x.health}/${x.maxHealth} satisfied` : `${x.health}/${x.maxHealth} morale`) : '';
+      return h('button', { class: 'chip-btn', onclick: () => this.onSelect(x.id) }, this.whoIs(x.id), need ? h('small', {}, ` · ${need}`) : null);
+    });
+    this.hintEl = h('div', { class: 'targeting-hint', role: 'dialog', 'aria-label': t.hint },
+      h('span', {}, t.hint), h('button', { class: 'btn small ghost', onclick: () => this.endTargeting() }, 'Cancel'),
+      h('div', { class: 'targets' }, ...targets));
     this.ui.appendChild(this.hintEl);
+    this.hintEl.querySelector('.targets button')?.focus({ preventScroll: true });
     if (this.view === 'challenge') this.challengeScene.setTargeting({ attackerId: t.sourceId, valid: t.valid });
   }
 
@@ -588,6 +627,7 @@ export class App {
   renderChallengeHud() {
     const s = this.svc.state, ch = s.challenge;
     if (!this.overlay) return;
+    const restore = holdFocus(this.overlay);
     clear(this.overlay);
     if (!ch || this.view !== 'challenge') return;
     const guest = ch.role === 'challenger';
@@ -617,13 +657,14 @@ export class App {
       h('div', { class: 'ch-log', 'aria-label': 'What’s happening' }, ...(ch.log || []).slice(0, 6).map((l) => h('div', { class: l.tone || '' }, l.text))),
     );
     if (this.hintEl) this.ui.appendChild(this.hintEl);
+    restore();
   }
 
   showChallengeResult(ch) {
-    if (!ch?.result) return;
+    if (!ch?.result || !this.svc) return;
     const r = ch.result;
     const guest = ch.role === 'challenger';
-    const title = { raidSuccessful: guest ? 'Recipes copied!' : 'They copied your recipes', attackerDefeated: guest ? 'Your critic is satisfied' : 'Critic satisfied — party over!', attackerRetreated: 'Crew headed home' }[r.status] || CHALLENGE_STATUS[r.status] || 'Service over';
+    const title = { raidSuccessful: r.stolen ? (guest ? 'Recipes copied!' : 'They copied your recipes') : 'Nothing to copy', attackerDefeated: guest ? 'Your critic is satisfied' : 'Critic satisfied — party over!', attackerRetreated: 'Crew headed home' }[r.status] || CHALLENGE_STATUS[r.status] || 'Service over';
     this.modal(icon(r.tone === 'good' ? 'sparkle' : r.tone === 'bad' ? 'grumble' : 'door', 'big-icon'), title, r.text, [['Back to my restaurant', () => { this.svc.dismissChallenge?.(); this.setView('home'); }]]);
   }
 
@@ -667,7 +708,7 @@ export class App {
     this.onlineEl = h('span', { class: 'online' });
     const narrow = window.innerWidth < 720;
     const chat = h('section', { class: `chat ${narrow ? 'min' : ''}`, 'aria-label': 'Group chat' });
-    this.chatTitle = h('span', {}, `${esc(g.group?.name || 'Group')} chat`);
+    this.chatTitle = h('span', {}, `${g.group?.name || 'Group'} chat`);
     this.chatGroupName = g.group?.name || 'Group';
     const head = h('button', { class: 'chat-head', 'aria-expanded': narrow ? 'false' : 'true', onclick: () => { const min = chat.classList.toggle('min'); head.setAttribute('aria-expanded', min ? 'false' : 'true'); } }, icon('chat'), this.chatTitle, this.onlineEl);
     chat.append(head, log, form);

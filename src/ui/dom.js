@@ -20,6 +20,33 @@ export function h(tag, attrs = {}, ...children) {
 
 export function clear(e) { while (e.firstChild) e.removeChild(e.firstChild); return e; }
 
+const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]';
+
+/**
+ * Re-render `from` into `to` (or in place) without losing keyboard focus:
+ * the focused control is found again by id, else by position and label.
+ * Returns a function to call once the new content is in the DOM.
+ */
+export function holdFocus(from) {
+  const a = document.activeElement;
+  if (!from || !a || !from.contains(a)) return () => {};
+  const all = [...from.querySelectorAll(FOCUSABLE)];
+  const at = all.indexOf(a), label = a.textContent || a.getAttribute('aria-label') || '';
+  let sel = null;
+  try { sel = a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null; } catch (e) { /* number inputs */ }
+  return (to = from) => {
+    let b = a.id ? to.querySelector(`#${CSS.escape(a.id)}`) : null;
+    if (!b) {
+      const now = [...to.querySelectorAll(FOCUSABLE)];
+      b = (now[at] && (now[at].textContent || now[at].getAttribute('aria-label') || '') === label ? now[at] : null)
+        || now.find((x) => (x.textContent || x.getAttribute('aria-label') || '') === label) || now[at] || null;
+    }
+    if (!b) return;
+    b.focus({ preventScroll: true });
+    if (sel) try { b.setSelectionRange(...sel); } catch (e) { /* not a text field */ }
+  };
+}
+
 export function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
