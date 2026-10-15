@@ -632,6 +632,9 @@ export class App {
 
   onSelect(id) {
     if (!id) { if (this.sheet?.kind === 'staff') { this.sheetEl?.remove(); this.sheetEl = null; this.sheet = null; this.renderDock(); } return; }
+    // Only open a card for someone who's actually here.
+    const known = this.svc.state.structs.has(id) || this.svc.state.challenge?.structs.has(id) || this.peekStructs?.has(id);
+    if (!known) return;
     if (this.targeting) {
       const t = this.targeting;
       if (t.valid.has(id)) {
@@ -728,7 +731,9 @@ export class App {
     try {
       const id = await this.svc.hire(typeId, area);
       this.closeSheet();
-      if (id && this.view === 'home') setTimeout(() => this.homeScene.select(id), 250);
+      // Show the new hire's card. (On a guild hire() resolves to the signed
+      // transaction; the new staff member's id only arrives later from the chain.)
+      if (typeof id === 'string' && this.view === 'home') setTimeout(() => { if (this.svc.state.structs.has(id)) this.homeScene.select(id); }, 250);
     } catch (e) { sfx.complain(); this.announce({ text: this.svc.friendlyError(e), tone: 'bad' }); }
   }
 
