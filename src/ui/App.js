@@ -71,7 +71,8 @@ export class App {
     window.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       const pop = [...this.ui.querySelectorAll('.modal-back')].pop();
-      if (pop) [...pop.querySelectorAll('.modal button')].pop()?.click();
+      if (this.tipKey) this.hideHudTip(true);
+      else if (pop) [...pop.querySelectorAll('.modal button')].pop()?.click();
       else if (this.targeting) this.endTargeting();
       else this.closeSheet();
     });
@@ -505,28 +506,130 @@ export class App {
 
   /* ── HUD ──────────────────────────────────────────────────────────────── */
 
+  /**
+   * The top bar. Built once per game and then only its text changes: it
+   * updates every half second, and rebuilding it would reset hover, focus and
+   * any open explanation.
+   */
   renderHud() {
     if (!this.hudTop || !this.svc) return;
     const s = this.svc.state;
-    const hustle = this.svc.hustle();
-    const spare = this.svc.spareCash();
+    if (!this.hud || this.hud.root !== this.hudTop) this.buildHud();
+    const hud = this.hud;
+
+    const ownerSig = `${s.me.id}|${s.me.species}|${s.restaurant.name}|${s.me.name}|${s.me.guildName}|${this.svc.mode}`;
+    if (hud.ownerSig !== ownerSig) {
+      hud.ownerSig = ownerSig;
+      hud.ownerImg.src = Panels.ownerFace(this, s.me.id || 'me', s.me.species);
+      hud.restaurant.textContent = s.restaurant.name;
+      hud.who.textContent = `${s.me.name}${s.me.guildName ? ` · ${s.me.guildName}` : ''}`;
+      hud.badge.className = `mode-badge ${this.svc.mode}`;
+      hud.badge.textContent = this.svc.mode === 'demo' ? 'Demo' : 'Live';
+    }
+    const v = this.hudValues();
+    hud.vals.hustle.textContent = String(v.hustle);
+    hud.pips.forEach((p, i) => p.classList.toggle('on', i < Math.min(10, v.hustle)));
+    hud.vals.gold.textContent = gold(v.gold);
+    hud.vals.recipes.textContent = String(v.recipes);
+    hud.vals.undiscovered.textContent = String(v.undiscovered);
+    hud.vals.spare.textContent = cash(v.spare);
+    hud.vals.spare.style.color = v.spare < 0 ? 'var(--bad)' : '';
+    hud.vals.clock.textContent = `${v.nextTick}s`;
+    for (const [key, btn] of Object.entries(hud.stats)) btn.setAttribute('aria-label', this.hudTipText(key, v).title);
+    if (this.tipKey) this.fillHudTip(v);
+  }
+
+  hudValues() {
+    const s = this.svc.state;
     const sinceTick = (Date.now() - s.lastTickAt) / s.tickMs;
-    const pipsN = Math.min(10, hustle);
-    const hustlePips = h('span', { class: 'hustle', 'aria-hidden': 'true' });
-    for (let i = 0; i < 10; i++) hustlePips.appendChild(h('i', { class: i < pipsN ? 'on' : '' }));
-    const ownerImg = Panels.ownerFace(this, s.me.id || 'me', s.me.species);
-    const html = [
-      h('div', { class: 'pill owner-pill' }, h('img', { src: ownerImg, alt: '' }), h('div', { class: 'who' }, h('b', {}, s.restaurant.name), h('small', {}, `${s.me.name}${s.me.guildName ? ` · ${s.me.guildName}` : ''}`)),
-        h('span', { class: `mode-badge ${this.svc.mode}` }, this.svc.mode === 'demo' ? 'Demo' : 'Live')),
-      h('div', { class: 'stats' },
-        h('div', { class: 'pill stat', title: `${TERMS.charge}: builds up one point every tick. Every action spends it all.` }, icon('hustle'), h('span', { class: 'val' }, String(hustle)), hustlePips),
-        h('div', { class: 'pill stat', title: `${TERMS.alpha}: invest it to bring in more cash.` }, icon('gold'), h('span', { class: 'val' }, gold(s.wallet.gold)), h('small', {}, 'gold')),
-        h('div', { class: 'pill stat', title: `${TERMS.ore} ready to perfect, and ${TERMS.undiscoveredOre.toLowerCase()} still in this restaurant.` }, icon('recipe'), h('span', { class: 'val' }, String(s.wallet.recipes)), icon('mystery'), h('span', { class: 'val' }, String(s.restaurant.undiscovered))),
-        h('div', { class: 'pill stat', title: `Spare cash per tick: ${TERMS.capacity.toLowerCase()} ${cash(s.wallet.takings)} minus ${TERMS.load.toLowerCase()} ${cash(s.wallet.payroll)}.` }, icon('cash'), h('span', { class: 'val', style: { color: spare < 0 ? 'var(--bad)' : '' } }, cash(spare)), h('small', {}, 'spare')),
-        h('div', { class: 'pill stat clock-pill', title: `${TERMS.block} ${s.tick.toLocaleString('en-US')}` }, icon('clock'), h('span', { class: 'val' }, `${Math.max(0, Math.ceil((1 - Math.min(1, sinceTick)) * s.tickMs / 1000))}s`), h('small', {}, 'next tick')),
-      ),
-    ];
-    clear(this.hudTop).append(...html);
+    return {
+      hustle: this.svc.hustle(), gold: s.wallet.gold, recipes: s.wallet.recipes, undiscovered: s.restaurant.undiscovered,
+      takings: s.wallet.takings, payroll: s.wallet.payroll, spare: this.svc.spareCash(),
+      nextTick: Math.max(0, Math.ceil((1 - Math.min(1, sinceTick)) * s.tickMs / 1000)), tickSecs: s.tickMs / 1000, tick: s.tick,
+    };
+  }
+
+  /** What each stat means, with the current numbers. */
+  hudTipText(key, v) {
+    const demo = this.svc.mode === 'demo';
+    switch (key) {
+      case 'hustle': return { title: `${TERMS.charge}: ${v.hustle}`, text: `Builds up by 1 every tick. Every action — hiring, clocking in, serving — needs a minimum amount (shown on its button) and uses up all of your hustle when you do it.` };
+      case 'gold': return { title: `${TERMS.alpha}: ${gold(v.gold)}`, text: 'Your Sous Chef earns 1 gold for each recipe they perfect. Invest gold in your Light-Up Pole Sign (open its card) to bring in more cash every tick.' };
+      case 'recipes': return { title: `${TERMS.ore}: ${v.recipes} ready · ${v.undiscovered} undiscovered`, text: `Ready recipes wait for your Sous Chef to perfect them into gold. Undiscovered ones are still here for your Chef to find${v.undiscovered ? '' : ' — none are left, so open a new restaurant from the Staff menu'}.` };
+      case 'spare': return { title: `Spare cash: ${cash(v.spare)} per tick`, text: `${TERMS.capacity} ${cash(v.takings)} minus ${TERMS.load.toLowerCase()} ${cash(v.payroll)}. Every hire needs spare cash for their wage${v.spare < 0 ? ' — you’re short, so staff can’t all stay on shift' : ''}.` };
+      case 'clock': return { title: `Next ${TERMS.block.toLowerCase()} in ${v.nextTick}s`, text: `Everything in the kitchen happens on the tick, every ${v.tickSecs} seconds. This is ${TERMS.block.toLowerCase()} ${v.tick.toLocaleString('en-US')}.${demo ? ' Change the pace in Settings.' : ''}` };
+      default: return { title: '', text: '' };
+    }
+  }
+
+  buildHud() {
+    const stat = (key, cls, ...kids) => {
+      const b = h('button', { class: `pill stat ${cls}`, type: 'button', 'data-tip': key }, ...kids);
+      b.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse' && !this.tipPinned) this.showHudTip(key); });
+      b.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && !this.tipPinned) this.hideHudTip(); });
+      b.addEventListener('focus', () => { if (!this.tipPinned) this.showHudTip(key); });
+      b.addEventListener('blur', () => { if (!this.tipPinned) this.hideHudTip(); });
+      b.addEventListener('click', () => {
+        if (this.tipPinned && this.tipKey === key) return this.hideHudTip(true);
+        this.showHudTip(key, true);
+      });
+      return b;
+    };
+    const val = () => h('span', { class: 'val' });
+    const vals = { hustle: val(), gold: val(), recipes: val(), undiscovered: val(), spare: val(), clock: val() };
+    const pipsEl = h('span', { class: 'hustle', 'aria-hidden': 'true' });
+    const pips = [...Array(10)].map(() => pipsEl.appendChild(h('i')));
+    const stats = {
+      hustle: stat('hustle', '', icon('hustle'), vals.hustle, pipsEl),
+      gold: stat('gold', '', icon('gold'), vals.gold, h('small', {}, 'gold')),
+      recipes: stat('recipes', '', icon('recipe'), vals.recipes, icon('mystery'), vals.undiscovered),
+      spare: stat('spare', '', icon('cash'), vals.spare, h('small', {}, 'spare')),
+      clock: stat('clock', 'clock-pill', icon('clock'), vals.clock, h('small', {}, 'next tick')),
+    };
+    const ownerImg = h('img', { alt: '' }), restaurant = h('b'), who = h('small'), badge = h('span', { class: 'mode-badge' });
+    clear(this.hudTop).append(
+      h('div', { class: 'pill owner-pill' }, ownerImg, h('div', { class: 'who' }, restaurant, who), badge),
+      h('div', { class: 'stats' }, ...Object.values(stats)));
+    this.hudTip?.remove();
+    this.hudTip = h('div', { class: 'hud-tip', id: 'hud-tip', role: 'tooltip', hidden: true });
+    this.ui.appendChild(this.hudTip);
+    this.tipKey = null; this.tipPinned = false;
+    this.hud = { root: this.hudTop, ownerImg, restaurant, who, badge, vals, pips, stats, ownerSig: null };
+    if (!this.tipOutside) {
+      // A pinned explanation closes when you click or tap anywhere else.
+      this.tipOutside = (e) => { if (this.tipPinned && !e.target.closest?.('.stat, .hud-tip')) this.hideHudTip(true); };
+      document.addEventListener('pointerdown', this.tipOutside, true);
+    }
+  }
+
+  showHudTip(key, pin = false) {
+    const btn = this.hud?.stats[key];
+    if (!btn || !this.hudTip) return;
+    for (const b of Object.values(this.hud.stats)) { b.removeAttribute('aria-describedby'); b.setAttribute('aria-expanded', 'false'); }
+    this.tipKey = key; this.tipPinned = pin;
+    btn.setAttribute('aria-describedby', 'hud-tip');
+    btn.setAttribute('aria-expanded', pin ? 'true' : 'false');
+    this.hudTip.hidden = false;
+    this.fillHudTip(this.hudValues());
+  }
+
+  hideHudTip(unpin = false) {
+    if (unpin) this.tipPinned = false;
+    if (this.tipPinned || !this.hudTip) return;
+    for (const b of Object.values(this.hud?.stats || {})) { b.removeAttribute('aria-describedby'); b.setAttribute('aria-expanded', 'false'); }
+    this.tipKey = null;
+    this.hudTip.hidden = true;
+  }
+
+  fillHudTip(v) {
+    const btn = this.hud?.stats[this.tipKey], tip = this.hudTip;
+    if (!btn || !tip) return;
+    const { title, text } = this.hudTipText(this.tipKey, v);
+    clear(tip).append(h('b', {}, title), h('span', {}, text));
+    // Under its stat, kept on screen.
+    const r = btn.getBoundingClientRect(), w = tip.offsetWidth;
+    tip.style.top = `${Math.round(r.bottom + 8)}px`;
+    tip.style.left = `${Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)))}px`;
   }
 
   renderDock() {

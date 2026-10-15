@@ -74,7 +74,11 @@ button { font: inherit; color: inherit; }
 .owner-pill .who b { font-size: 1.05rem; }
 .owner-pill .who small { font-family: var(--body); color: var(--muted); font-weight: 700; font-size: .78rem; }
 .stats { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.stat { cursor: help; }
+.stat { cursor: pointer; border: 0; font: inherit; font-family: var(--display); font-weight: 600; color: inherit; }
+.stat:hover, .stat[aria-expanded="true"] { background: #fff; }
+.stat:focus-visible { outline: 3px solid var(--sea); outline-offset: 2px; }
+.hud-tip { position: fixed; z-index: 20; width: max-content; max-width: min(300px, calc(100vw - 16px)); background: var(--ink); color: #fff; border-radius: 16px; padding: 10px 14px; box-shadow: var(--shadow); font-size: .86rem; line-height: 1.4; pointer-events: auto; }
+.hud-tip b { display: block; font-family: var(--display); font-size: .95rem; margin-bottom: 3px; color: var(--butter); }
 .stat .val { font-variant-numeric: tabular-nums; }
 .stat small { color: var(--muted); font-family: var(--body); font-weight: 700; font-size: .75rem; }
 .stat .icon { width: 1.6em; height: 1.6em; }
