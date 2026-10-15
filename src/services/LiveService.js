@@ -560,9 +560,17 @@ export class LiveService extends Service {
         this.lastRaidStatus = msg.detail?.status || msg.status || this.lastRaidStatus;
         if (msg.detail?.seized_ore != null) this.lastSeized = Number(msg.detail.seized_ore) || 0;
         break;
-      case 'ore':
-        if (msg.subject?.endsWith(`.${this.state.me.id}`)) this.fx({ kind: 'job', job: 'mine' });
+      case 'ore': {
+        // The stream re-sends the current ore count; only a rise is a new recipe.
+        const me = this.state.me.id;
+        if (msg.subject !== `structs.grid.player.${me}.${me}`) break;
+        const ore = Number(msg.value);
+        if (Number.isFinite(ore)) {
+          if (this.lastOre != null && ore > this.lastOre) this.fx({ kind: 'job', job: 'mine' });
+          this.lastOre = ore;
+        }
         break;
+      }
       default: break;
     }
     this.schedulePull();
