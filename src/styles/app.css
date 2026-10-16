@@ -575,3 +575,9 @@ ul.rules { margin: 0; padding-left: 1.2em; color: #6d5646; font-size: .9rem; dis
   .guide { left: 8px; top: calc(env(safe-area-inset-top, 0px) + 150px); width: calc(100vw - 16px); padding: 10px 12px; }
   .guide-say { display: none; }
 }
+
+/* Scene-change iris wipe (App.iris) */
+.iris { position: fixed; z-index: 100; width: 0; height: 0; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 300vmax #2f2733; pointer-events: none;
+  transition: width .52s cubic-bezier(.55, 0, .35, 1), height .52s cubic-bezier(.55, 0, .35, 1); }
+.iris[hidden] { display: none; }
+.iris.fade { left: 50% !important; top: 50% !important; width: 100vw !important; height: 100vh !important; border-radius: 0; box-shadow: none; background: #2f2733; transition: opacity .25s ease; }

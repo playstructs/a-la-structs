@@ -524,6 +524,26 @@ export class RestaurantScene extends EventTarget {
     this.after(3 + this.r() * 6, () => this.passerBy());
   }
 
+  /**
+   * You, visiting: walk in off the street through the front door, look
+   * around and wave. Cleared with the rest of the ambient crowd.
+   */
+  visitorArrives({ species = 'cat', outfit = null, seed = 'visitor' } = {}) {
+    const c = new Character({ species, outfit: outfit || casualOutfit(this.r), seed, speed: 2.2 });
+    c.object.userData.character = null;
+    c.hitbox.userData.character = null;
+    const d = { c };
+    this.ambient.push(d);
+    this.env.group.add(c.object);
+    c.setPosition(DOOR.x + 0.3, 0, 9.4);
+    const spot = V(DOOR.x - 1.2 + this.r() * 0.8, 3.4);
+    c.walkTo(this.route(c.position, spot), () => {
+      c.face(0);
+      c.play('wave', 1.4, () => c.loop('talk'));
+    });
+    return d;
+  }
+
   removeAmbient(d) {
     d.c.dispose();
     this.ambient = this.ambient.filter((x) => x !== d);

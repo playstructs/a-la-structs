@@ -6,7 +6,7 @@
 import { Engine } from '../three/Engine.js';
 import { RestaurantScene } from '../three/scenes/RestaurantScene.js';
 import { ChallengeScene } from '../three/scenes/ChallengeScene.js';
-import { TownScene } from '../three/scenes/TownScene.js';
+import { TownScene, ownerOutfit } from '../three/scenes/TownScene.js';
 import { portrait } from '../three/portraits.js';
 import { DemoService } from '../services/DemoService.js';
 import { Hangout, botsFromMembers } from '../services/Hangout.js';
@@ -24,7 +24,7 @@ import { Guide } from './guide.js';
 import { BRAND, TERMS, ACTIONS, CHALLENGE_STATUS } from '../lexicon/terms.js';
 import { roleOf } from '../lexicon/roles.js';
 import { AREAS } from '../lexicon/areas.js';
-import { nameFor, SPECIES, SPECIES_NAMES, speciesFor } from '../lexicon/names.js';
+import { nameFor, SPECIES, SPECIES_NAMES, speciesFor, awningFor } from '../lexicon/names.js';
 import { is, isCommand, cash, gold, weaponField } from '../game/model.js';
 import { OUTFITS } from '../three/outfits.js';
 
@@ -469,7 +469,7 @@ export class App {
       this.syncChallenge();
       this.renderChallengeHud();
     } else if (view === 'town') {
-      this.enterTown();
+      this.townReady = this.enterTown();
       this.guide?.flag('town');
     } else if (view === 'peek') {
       this.engine.setScene(opts.scene);
@@ -477,7 +477,7 @@ export class App {
       this.peekStructs = new Map(opts.structs.map((x) => [x.id, x]));
       this.overlay.appendChild(h('div', { class: 'peek-banner' }, h('span', {}, opts.rival ? `Sizing up ${opts.title}` : `Visiting ${opts.title}`),
         opts.rival && opts.member ? h('button', { class: 'btn small berry', onclick: () => this.challenge(opts.member) }, 'Send the crew') : null,
-        h('button', { class: 'btn small ghost', onclick: () => this.setView(opts.from || 'home') }, icon('back'), 'Leave')));
+        h('button', { class: 'btn small ghost', onclick: () => this.leavePeek(opts) }, icon('back'), 'Leave')));
     }
     this.renderDock();
   }
@@ -1092,19 +1092,86 @@ export class App {
 
   /* ── peeking & town ───────────────────────────────────────────────────── */
 
-  async peek(playerId, rival = false, from = null) {
+  /**
+   * Visit someone's restaurant: a cozy iris wipe closes (on the doorway, when
+   * you walked in from town) while the restaurant loads, then opens on its
+   * dining room as you walk in through the front door.
+   */
+  async peek(playerId, rival = false, from = null, at = null) {
+    if (this.peeking) return;
+    this.peeking = true;
     this.closeSheet();
-    if (playerId === this.svc.state.me.id) return this.setView('home');
+    const back = from || (this.view === 'town' ? 'town' : 'home');
     try {
-      const p = await this.svc.peekRestaurant(playerId);
-      if (!p) throw new Error('Couldn’t find that restaurant.');
+      if (playerId === this.svc.state.me.id) {
+        await this.iris('close', at);
+        this.setView('home');
+        await this.iris('open');
+        return;
+      }
+      const closing = this.iris('close', at);
+      let p = null, err = null;
+      try { p = await this.svc.peekRestaurant(playerId); } catch (e) { err = e; }
+      await closing;
+      if (!p) {
+        if (back === 'town' && this.view === 'town') this.townScene?.exitLot(playerId);
+        await this.iris('open');
+        this.announce({ text: err ? this.svc.friendlyError(err) : 'Couldn’t find that restaurant.', tone: 'bad' });
+        return;
+      }
       const sc = new RestaurantScene({ name: p.restaurantName, ownerId: p.player.id, mode: 'peek' });
       sc.sync(p.structs, { types: this.svc.state.types, ownerSpecies: p.player.species, crewAway: false, jobs: new Map() });
       sc.addEventListener('select', (e) => this.onSelect(e.detail.id));
       const member = (this.rivals || []).find((r) => r.id === playerId) || (rival ? { id: playerId, restaurantName: p.restaurantName, name: p.player.name } : null);
-      this.setView('peek', { scene: sc, structs: p.structs, title: p.restaurantName, rival, member, from: from || (this.view === 'town' ? 'town' : 'home') });
-    } catch (e) { this.announce({ text: this.svc.friendlyError(e), tone: 'bad' }); }
+      this.peekingId = playerId;
+      this.setView('peek', { scene: sc, structs: p.structs, title: p.restaurantName, rival, member, from: back });
+      // You, walking in through their front door.
+      const me = this.svc.state.me;
+      sc.visitorArrives({ species: me.species, outfit: ownerOutfit(awningFor(me.id || 'me')[0]), seed: me.id || 'me' });
+      await this.iris('open');
+    } finally { this.peeking = false; }
   }
+
+  /** Leave a restaurant you're visiting: wipe back to where you came from, stepping out of its door in town. */
+  async leavePeek(opts) {
+    if (this.peeking) return;
+    this.peeking = true;
+    try {
+      await this.iris('close');
+      const id = this.peekingId;
+      this.setView(opts.from || 'home');
+      if ((opts.from || 'home') === 'town') { await this.townReady; this.townScene?.exitLot(id); }
+      await this.iris('open');
+    } finally { this.peeking = false; }
+  }
+
+  /**
+   * The scene-change wipe: a circle closing to (x, y) or opening from the
+   * middle, like the end of an old cartoon. A plain fade with reduced motion.
+   */
+  iris(dir, at = null) {
+    return new Promise((resolve) => {
+      let el = this.irisEl;
+      if (!el) { el = this.irisEl = h('div', { class: 'iris', 'aria-hidden': 'true' }); document.body.appendChild(el); }
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const W = window.innerWidth, H = window.innerHeight;
+      const x = at && Number.isFinite(at.x) ? at.x : W / 2, y = at && Number.isFinite(at.y) ? at.y : H / 2;
+      const full = 2 * Math.hypot(Math.max(x, W - x), Math.max(y, H - y)) + 40;
+      el.classList.toggle('fade', reduce);
+      el.style.left = `${x}px`; el.style.top = `${y}px`;
+      el.hidden = false;
+      const ms = reduce ? 250 : dir === 'close' ? 520 : 600;
+      el.style.transition = 'none';
+      if (reduce) el.style.opacity = dir === 'close' ? '0' : '1';
+      else el.style.width = el.style.height = `${dir === 'close' ? full : 0}px`;
+      void el.offsetWidth;
+      el.style.transition = '';
+      if (reduce) el.style.opacity = dir === 'close' ? '1' : '0';
+      else el.style.width = el.style.height = `${dir === 'close' ? 0 : full}px`;
+      setTimeout(() => { if (dir === 'open') el.hidden = true; resolve(); }, ms + 30);
+    });
+  }
+
 
   async enterTown() {
     const s = this.svc.state;
@@ -1112,7 +1179,7 @@ export class App {
     try { g = await this.svc.getGroup(); } catch (e) { this.announce({ text: 'Couldn’t load your restaurant group.', tone: 'bad' }); }
     if (!this.townScene) {
       this.townScene = new TownScene({ me: { id: s.me.id || 'me', name: s.me.name, species: s.me.species }, group: g.group });
-      this.townScene.addEventListener('peek', (e) => this.peek(e.detail.playerId, e.detail.rival, 'town'));
+      this.townScene.addEventListener('peek', (e) => this.peek(e.detail.playerId, e.detail.rival, 'town', e.detail.at));
       this.townScene.hangout = this.hangout;
     }
     // Members between restaurants (no planet) have no lot in town; they're still in Group › Members.

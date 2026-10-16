@@ -18,7 +18,7 @@ const LOT = 25.5;         // where buildings sit
 const RIVER_Z = -42;
 const RIVAL_Z = -54;
 
-function ownerOutfit(color) {
+export function ownerOutfit(color) {
   return { ...OUTFITS.casual, shirt: color, sleeves: color, apron: '#fff7e8', apronStyle: 'waist', pants: '#4b4f5c', hold: null };
 }
 
@@ -35,6 +35,7 @@ export class TownScene extends EventTarget {
     this.rivalLots = [];
     this.peers = new Map();
     this.ticks = [];
+    this.tweens = [];      // short animations: { dur, t, fn(k), done }
     this.keys = new Set();
     this.time = 0;
     this.r = rng('town');
@@ -171,8 +172,7 @@ export class TownScene extends EventTarget {
     b.box(w, h, d, wall, { y: h / 2 }, 0.15);
     b.box(w + 0.4, 0.4, d + 0.4, awn, { y: h + 0.2 }, 0.1);
     b.box(w * 0.7, 1.0, d * 0.6, stripe === '#ffffff' ? '#f7efe5' : stripe, { y: h + 0.9 }, 0.15);
-    b.box(1.4, 2.2, 0.2, '#9c6a3f', { y: 1.1, z: d / 2 + 0.02 }, 0.06);
-    b.sphere(0.08, '#ffd23f', { x: 0.45, y: 1.1, z: d / 2 + 0.15 });
+    b.box(1.5, 2.3, 0.1, '#3b2a22', { y: 1.15, z: d / 2 + 0.005 }, 0.02);   // the doorway, seen when the door opens
     for (const x of [-2.4, 2.4]) {
       b.box(1.8, 1.3, 0.12, '#c98f5a', { x, y: 1.7, z: d / 2 + 0.03 }, 0.05);
       b.box(1.55, 1.05, 0.14, '#bfe7ff', { x, y: 1.7, z: d / 2 + 0.04 }, 0.04);
@@ -183,6 +183,16 @@ export class TownScene extends EventTarget {
     for (let i = 0; i < 8; i++) b.box(w / 8, 0.06, 1.2, i % 2 ? stripe : awn, { x: -w / 2 + (i + 0.5) * w / 8, y: 2.85, z: d / 2 + 0.55, rx: 0.35 }, 0.01);
     const mesh = b.mesh();
     g.add(mesh);
+    // The front door hangs on its left edge so it can swing open.
+    const db = new Builder();
+    db.box(1.4, 2.2, 0.14, '#9c6a3f', { x: 0.7, y: 1.1 }, 0.06);
+    db.sphere(0.08, '#ffd23f', { x: 1.15, y: 1.1, z: 0.12 });
+    const doorPivot = new THREE.Group();
+    doorPivot.position.set(-0.7, 0, d / 2 + 0.06);
+    doorPivot.add(db.mesh());
+    g.add(doorPivot);
+    g.userData.door = doorPivot;
+    g.userData.depth = d;
     const sign = textTexture(m.restaurantName || 'Restaurant', { w: 1024, h: 180, bg: '#fff7e8', fg: '#5a3b2a', border: awn, font: '700 88px Fredoka, system-ui, sans-serif', radius: 40 });
     const sm = new THREE.Mesh(new THREE.PlaneGeometry(6.2, 1.1), new THREE.MeshBasicMaterial({ map: sign, transparent: true }));
     sm.material.userData.outlineParameters = { visible: false };
@@ -261,6 +271,8 @@ export class TownScene extends EventTarget {
 
   enter(engine) {
     this.engine = engine;
+    // Fresh arrival: no doorway in progress (exitLot sets one up after this if you're stepping out).
+    this.entering = false; this.doorCam = null; this.camReturn = null; this.camSaved = null;
     const a = this.avatar.position;
     const far = engine.camera.aspect < 0.9 ? 1.25 : 1;
     engine.frameView({ target: V(a.x, a.z, 0.8), position: V(a.x, a.z + 15 * far, 26 * far), minDistance: 12, maxDistance: 70, minPolar: 0.2, maxPolar: 0.95, minAzimuth: -Infinity, maxAzimuth: Infinity, pan: false });
@@ -268,7 +280,11 @@ export class TownScene extends EventTarget {
     for (const p of this.peers.values()) p.label = engine.labels.attach(p.c.anchor, el('div', 'nametag', `<b>${escapeHtml(p.info.name)}</b>${p.info.restaurant ? `<small>${escapeHtml(p.info.restaurant)}</small>` : ''}`));
     this.promptHolder = new THREE.Object3D(); this.scene.add(this.promptHolder);
     this.promptEl = el('button', 'world-prompt', '');
-    this.promptEl.addEventListener('click', (e) => { e.stopPropagation(); if (this.nearLot) this.dispatchEvent(new CustomEvent('peek', { detail: { playerId: this.nearLot.member.id, rival: this.nearLot.rival, member: this.nearLot.member } })); });
+    this.promptEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const lot = this.nearLot && [...this.lots, ...this.rivalLots].find((l) => l.member.id === this.nearLot.member.id);
+      if (lot && !this.entering) this.enterLot(lot, !!this.nearLot.rival);
+    });
     this.prompt = engine.labels.attach(this.promptHolder, this.promptEl);
     this.promptEl.hidden = true;
     window.addEventListener('keydown', this.onKey);
@@ -297,12 +313,77 @@ export class TownScene extends EventTarget {
   pickables() { return [...this.lots.map((l) => l.group), ...this.rivalLots.map((l) => l.group)]; }
 
   pick(hit) {
+    if (this.entering) return;
     if (hit?.data?.playerId) {
       const lot = [...this.lots, ...this.rivalLots].find((l) => l.member.id === hit.data.playerId);
-      if (lot) this.avatar.walkTo(this.pathTo(lot.door), () => { this.avatar.faceTowards(lot.group.position); this.dispatchEvent(new CustomEvent('peek', { detail: { playerId: lot.member.id, rival: !!hit.data.rival, member: lot.member } })); });
+      if (lot) this.enterLot(lot, !!hit.data.rival);
       return;
     }
     if (hit?.ground) this.avatar.walkTo(this.pathTo(hit.point));
+  }
+
+  tween(dur, fn, done) { this.tweens.push({ dur, t: 0, fn, done }); }
+
+  swingDoor(lot, open, dur = 0.4, done) {
+    const pivot = lot.group.userData.door;
+    if (!pivot) { done?.(); return; }
+    const from = pivot.rotation.y, to = open ? 1.65 : 0;   // swings inward
+    this.tween(dur, (k) => { pivot.rotation.y = from + (to - from) * k; }, done);
+  }
+
+  /** A spot just inside a lot's front door, in world space. */
+  insideDoor(lot, depth = 1.6) {
+    lot.group.updateMatrixWorld(true);
+    return lot.group.localToWorld(V(0, lot.group.userData.depth / 2 - depth));
+  }
+
+  /** A camera spot out front of a lot's door, looking at the doorway. */
+  doorView(lot) {
+    const out = lot.door.clone().sub(lot.group.position).setY(0).normalize();
+    const at = this.insideDoor(lot, -0.3).setY(1.2);
+    return { target: at, pos: at.clone().addScaledVector(out, 11).add(V(0, 0, 7)) };
+  }
+
+  /**
+   * Walk up to a restaurant, open the door and step in; `peek` fires as you
+   * cross the threshold (with the doorway's screen position, for the wipe).
+   */
+  enterLot(lot, rival = false) {
+    this.entering = true;
+    const av = this.avatar;
+    if (this.engine && !this.camSaved) this.camSaved = this.engine.camera.position.clone().sub(this.engine.controls.target);
+    av.walkTo(this.pathTo(lot.door), () => {
+      this.doorCam = this.doorView(lot);
+      av.faceTowards(lot.group.position);
+      this.swingDoor(lot, true, 0.45, () => {
+        const inside = this.insideDoor(lot);
+        av.walkTo([inside]);
+        const at = this.engine?.toScreen(this.insideDoor(lot, -0.2).setY(1.2));
+        setTimeout(() => {
+          this.dispatchEvent(new CustomEvent('peek', { detail: { playerId: lot.member.id, rival, member: lot.member, at } }));
+          this.swingDoor(lot, false, 0.5);
+        }, 450);
+      });
+    });
+  }
+
+  /** Coming back out of a restaurant: step out through its door, which closes behind you. */
+  exitLot(playerId) {
+    const lot = [...this.lots, ...this.rivalLots].find((l) => l.member.id === playerId);
+    const av = this.avatar;
+    this.entering = false;
+    if (!lot) return;
+    const inside = this.insideDoor(lot, 0.9);
+    av.stop?.(); av.setPosition(inside.x, 0, inside.z);
+    av.faceTowards(lot.door);
+    // start looking at the door, then hand the camera back once it's shut
+    if (this.engine) this.camSaved = this.engine.camera.position.clone().sub(this.engine.controls.target);
+    this.doorCam = this.doorView(lot);
+    if (this.engine) { this.engine.controls.target.copy(this.doorCam.target); this.engine.camera.position.copy(this.doorCam.pos); }
+    const release = () => { this.doorCam = null; this.camReturn = this.camSaved || null; this.camSaved = null; };
+    this.swingDoor(lot, true, 0.3, () => {
+      av.walkTo([lot.door.clone().add(lot.door.clone().sub(lot.group.position).setY(0).normalize().multiplyScalar(1.2))], () => this.swingDoor(lot, false, 0.45, release));
+    });
   }
 
   pathTo(p) {
@@ -322,7 +403,7 @@ export class TownScene extends EventTarget {
     if (this.keys.has('a') || this.keys.has('arrowleft')) mx -= 1;
     if (this.keys.has('d') || this.keys.has('arrowright')) mx += 1;
     const av = this.avatar;
-    if (mx || mz) {
+    if ((mx || mz) && !this.entering) {
       const cam = engine.camera;
       const fwd = new THREE.Vector3(); cam.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
       const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0));
@@ -335,12 +416,24 @@ export class TownScene extends EventTarget {
     av.position.z = THREE.MathUtils.clamp(av.position.z, -75, 45);
     av.update(dt);
 
-    // camera follows
+    // camera follows — or, while stepping through a door, looks straight at it
     const c = engine.controls;
-    const want = V(av.position.x, av.position.z, 0.8);
-    const delta = want.clone().sub(c.target).multiplyScalar(Math.min(1, dt * 5));
-    c.target.add(delta);
-    engine.camera.position.add(delta);
+    if (this.doorCam) {
+      const k = Math.min(1, dt * 3);
+      c.target.lerp(this.doorCam.target, k);
+      engine.camera.position.lerp(this.doorCam.pos, k);
+    } else {
+      const want = V(av.position.x, av.position.z, 0.8);
+      const delta = want.clone().sub(c.target).multiplyScalar(Math.min(1, dt * 5));
+      c.target.add(delta);
+      engine.camera.position.add(delta);
+      // after a doorway, ease back to the usual angle behind you
+      if (this.camReturn) {
+        const goal = c.target.clone().add(this.camReturn);
+        engine.camera.position.lerp(goal, Math.min(1, dt * 2.5));
+        if (engine.camera.position.distanceTo(goal) < 0.2) this.camReturn = null;
+      }
+    }
 
     // broadcast footsteps
     if (this.hangout && (av.walking || this.time - (this.lastSent || 0) > 2)) {
@@ -376,6 +469,12 @@ export class TownScene extends EventTarget {
       }
     }
     for (const fn of this.ticks) fn(dt, this.time);
+    for (const tw of [...this.tweens]) {
+      tw.t += dt;
+      const k = Math.min(1, tw.t / tw.dur);
+      tw.fn(k * k * (3 - 2 * k));
+      if (k >= 1) { this.tweens = this.tweens.filter((x) => x !== tw); tw.done?.(); }
+    }
     this.fx.update(dt);
   }
 
