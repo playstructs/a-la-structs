@@ -217,6 +217,13 @@ button { font: inherit; color: inherit; }
 .ch-banner .row { display: flex; gap: 10px; align-items: center; }
 .ch-banner .row .progress { flex: 1; background: #4a3f50; }
 .ch-banner .row small { font-weight: 800; color: var(--butter); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The challenge card and log never block the room: taps fall through to the
+   critters and tags behind them, except on the card's own buttons. */
+#ui .ch-banner, #ui .ch-log { pointer-events: none; }
+#ui .ch-banner button { pointer-events: auto; }
+.ch-banner.min { width: min(320px, calc(100vw - 32px)); padding: 6px 10px; }
+.ch-banner.min .row { gap: 8px; }
+.ch-banner .row .btn.small { padding: .2em .6em; min-width: 2em; }
 .ch-log { position: absolute; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 104px); width: min(340px, calc(100vw - 32px)); max-height: 30vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
 .ch-log div { background: rgba(255,250,240,.95); border-radius: 14px; padding: 7px 11px; font-size: .84rem; box-shadow: 0 3px 0 rgba(122,86,56,.14); }
 .ch-log div.good { border-left: 5px solid var(--leaf); }

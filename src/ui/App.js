@@ -1004,12 +1004,25 @@ export class App {
     const pct = Math.round((ch.heist?.progress || 0) * 100);
     const critic = customers.find((x) => isCommand(s.types.get(x.typeId)));
     const criticLeft = critic ? critic.health : 0;
+    // Folded down to a small pill: just the copied bar, out of the way of the room.
+    if (this.chMin) {
+      this.overlay.append(
+        h('div', { class: 'ch-banner min', role: 'status' },
+          h('div', { class: 'row' }, icon('bell'), h('small', {}, `Recipes copied ${pct}%`), h('div', { class: `progress ${guest ? '' : 'berry'}` }, h('i', { style: { width: `${pct}%` } })),
+            h('button', { class: 'btn small ghost', 'aria-label': 'Show the challenge details', 'aria-expanded': 'false', onclick: () => { this.chMin = false; this.renderChallengeHud(); } }, '▾'))),
+        h('div', { class: 'ch-log', 'aria-label': 'What’s happening' }, ...(ch.log || []).slice(0, 4).map((l) => h('div', { class: l.tone || '' }, l.text))),
+      );
+      if (this.hintEl) this.ui.appendChild(this.hintEl);
+      restore();
+      return;
+    }
     this.overlay.append(
       h('div', { class: 'ch-banner', role: 'status' },
         h('div', { class: 'row' },
           h('h3', {}, icon('bell'), h('span', {}, guest ? `At ${ch.restaurantName}` : `${ch.guest.name}’s crew is dining here!`)),
           guest && ch.status === 'ongoing' ? h('button', { class: 'btn small ghost', onclick: () => this.act(() => this.svc.goHome()) }, 'Go home') : null,
-          h('button', { class: 'btn small ghost', 'aria-label': 'How it works', onclick: () => { this.chHelp = !this.chHelp; this.renderChallengeHud(); } }, '?')),
+          h('button', { class: 'btn small ghost', 'aria-label': 'How it works', onclick: () => { this.chHelp = !this.chHelp; this.renderChallengeHud(); } }, '?'),
+          h('button', { class: 'btn small ghost', 'aria-label': 'Fold the challenge card away', 'aria-expanded': 'true', onclick: () => { this.chMin = true; this.chHelp = false; this.renderChallengeHud(); } }, '▴')),
         Date.now() - (this.chStart || 0) < 15000 || this.chHelp ? h('p', {}, guest
           ? 'Your crew are the customers. Tap one of them, pick a complaint, then tap a staff member. Stay until you’ve copied their recipes — if they satisfy your Food Critic, you all go home.'
           : 'Tap one of your staff, pick how to serve, then tap a customer. Satisfy their Food Critic and the whole party leaves — before they copy your recipes.') : null,

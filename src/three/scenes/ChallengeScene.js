@@ -32,14 +32,15 @@ export class ChallengeScene extends RestaurantScene {
   }
 
   /**
-   * On a portrait phone the challenge banner sits under the top bar, so aim
-   * a little further back: the room moves down into the free space below it.
-   * (Anyone cropped off the sides is still in the target list.)
+   * The challenge card sits at the top of the screen, so aim a little further
+   * back: the room moves down into the free sidewalk below it. (Anyone cropped
+   * off the sides on a phone is still in the target list.)
    */
   fit(engine) {
     super.fit(engine);
-    if (engine.camera.aspect >= 0.8) return;
-    const shift = V(0, 0, -3.2);
+    // Aim a little further back so the room sits below the challenge card
+    // (more on a portrait phone, where the card is under the top bar).
+    const shift = V(0, 0, engine.camera.aspect >= 0.8 ? -1.8 : -3.2);
     engine.controls.target.add(shift);
     engine.camera.position.add(shift);
     engine.controls.update();
