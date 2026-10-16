@@ -502,7 +502,7 @@ export class App {
   syncChallenge() {
     const s = this.svc.state, ch = s.challenge;
     if (!ch || !this.challengeScene) return;
-    this.challengeScene.sync([...ch.structs.values()], { types: s.types, hostId: ch.hostId, ownerSpecies: ch.host.species, ownerSeed: ch.hostId === s.me.id ? (s.me.id || 'me') : ch.hostId, guestSpecies: ch.guest.species, jobs: s.jobs });
+    this.challengeScene.sync([...ch.structs.values()], { types: s.types, hostId: ch.hostId, meId: s.me.id, ownerSpecies: ch.host.species, ownerSeed: ch.hostId === s.me.id ? (s.me.id || 'me') : ch.hostId, guestSpecies: ch.guest.species, jobs: s.jobs });
   }
 
   onChange(what) {

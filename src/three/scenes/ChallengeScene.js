@@ -128,6 +128,15 @@ export class ChallengeScene extends RestaurantScene {
     this.refreshLabel(a);
   }
 
+  /** Whose critter this is: yours, or the opponent's (their bubbles get a rival tint). */
+  markSide(a) {
+    const e = a.labelEl;
+    if (!e || !this.ctx.meId) return;
+    const theirs = a.struct?.owner !== this.ctx.meId;
+    e.classList.toggle('theirs', theirs);
+    e.classList.toggle('mine', !theirs);
+  }
+
   refreshLabel(a) {
     if (!a.customer) {
       super.refreshLabel(a);
@@ -135,6 +144,7 @@ export class ChallengeScene extends RestaurantScene {
       if (e) {
         e.classList.toggle('targetable', !!this.targeting?.valid.has(a.id));
         e.classList.toggle('dim', !!this.targeting && !this.targeting.valid.has(a.id) && a.id !== this.targeting.attackerId);
+        this.markSide(a);
       }
       return;
     }
@@ -154,6 +164,7 @@ export class ChallengeScene extends RestaurantScene {
     e.classList.toggle('selected', this.selectedId === a.id);
     e.classList.toggle('targetable', !!this.targeting?.valid.has(a.id));
     e.classList.toggle('dim', !!this.targeting && !this.targeting.valid.has(a.id) && a.id !== this.targeting.attackerId);
+    this.markSide(a);
   }
 
   /** Highlight who the selected employee can serve. */

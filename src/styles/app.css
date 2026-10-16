@@ -179,6 +179,17 @@ button { font: inherit; color: inherit; }
 .tag.customer { background: #fff0f3; }
 .tag.critic { background: #2f2733; color: #fff; border-color: #ffd166; }
 .tag.critic small { color: #ffd166 !important; }
+/* In a challenge: your critters keep the cream bubble with a green edge; the
+   opponent's get a rosy rival tint, whichever side of the counter they're on. */
+.tag.mine { border-color: #9fdcbf; }
+.tag.customer.mine { background: rgba(255, 250, 240, .95); }
+.tag.theirs { background: #ffdfe5; border-color: var(--berry); color: #7d2636; }
+.tag.theirs .tag-title small { color: #a8485a; }
+/* the Food Critic's bubble stays dark (white text) whoever it belongs to */
+.tag.critic.mine { background: #2f2733; color: #fff; border-color: var(--leaf); }
+.tag.critic.theirs { background: #4a1f2a; border-color: var(--berry); color: #fff; }
+.tag.mine.selected, .tag.theirs.selected { border-color: var(--butter); }
+.tag.mine.targetable, .tag.theirs.targetable { border-color: var(--leaf); }
 .tag.targetable { border-color: var(--leaf); animation: pulse 1s infinite; }
 .tag.dim { opacity: .35 !important; }
 .pips { display: flex; gap: 2px; justify-content: center; margin-top: 3px; }
