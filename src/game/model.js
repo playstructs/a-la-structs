@@ -38,7 +38,11 @@ export function normalizeType(t) {
   ['movable', 'slotBound', 'primaryWeaponBlockable', 'primaryWeaponCounterable', 'secondaryWeaponBlockable',
     'secondaryWeaponCounterable', 'attackCounterable', 'stealthSystems', 'triggerRaidDefeatByDestruction',
     'primaryWeaponArmourPiercing', 'secondaryWeaponArmourPiercing', 'canDefend', 'isCommand'].forEach(bool);
-  if (out.canDefend == null) out.canDefend = out.category === 'fleet';
+  // Every crew (fleet) struct can cover on chain. Guild APIs send this flag in
+  // varying shapes (or not at all), so do what structs-webapp does and go by
+  // the category; planetary structs keep whatever the data says.
+  if (String(out.category || '').toLowerCase() === 'fleet') out.canDefend = true;
+  else if (out.canDefend == null) out.canDefend = false;
   return out;
 }
 

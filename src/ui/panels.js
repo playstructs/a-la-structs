@@ -137,9 +137,12 @@ export function staffSheet(app, id) {
     else {
       if (is.online(s)) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.clockOut(s.id)) }, kind === 'equipment' ? words.deactivate.equipment : words.deactivate.staff));
       else foot.push(h('button', { class: 'btn small', onclick: () => app.act(() => svc.clockIn(s.id)) }, kind === 'equipment' ? words.activate.equipment : words.activate.staff, h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.activateCharge || 0) }, icon('hustle'), String(t.activateCharge || 0))));
-      if (t.canDefend && is.online(s)) {
-        if (s.protects) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.uncover(s.id)) }, words.defenseClear));
-        else foot.push(h('button', { class: 'btn sea small', onclick: () => app.beginCover(s.id) }, icon('shield'), words.defenseSet));
+      // Always offered to staff who can cover, so it's never a mystery where it went; off shift it says why.
+      if (t.canDefend) {
+        const off = !is.online(s);
+        if (s.protects && !off) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.uncover(s.id)) }, words.defenseClear));
+        else foot.push(h('button', { class: 'btn sea small', disabled: off, title: off ? 'Clock them in first — only staff on shift can cover.' : null, onclick: () => app.beginCover(s.id) }, icon('shield'), words.defenseSet));
+        if (off) foot.push(h('span', { class: 'why' }, 'Clock them in to cover for someone.'));
       }
       if (t.unitDefenses === 'stealthMode' && is.online(s)) foot.push(h('button', { class: 'btn butter small', onclick: () => app.act(() => svc.blendIn(s.id, !is.hidden(s))) }, is.hidden(s) ? words.stealthOff : words.stealthOn, h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.stealthActivateCharge || 0) }, icon('hustle'), String(t.stealthActivateCharge || 0))));
       if (isCommand(t) && is.online(s)) {
