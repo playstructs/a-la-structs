@@ -10,7 +10,7 @@
 let ctx = null;
 let master = null, comp = null, reverb = null, reverbIn = null;
 const buses = {};
-const volumes = { music: 0.6, ambience: 0.5, effects: 0.8 };
+const volumes = { music: 0.6, ambience: 0.5, effects: 0.2 };
 let enabled = true;
 let unlocked = false;
 const listeners = new Set();
