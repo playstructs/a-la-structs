@@ -20,6 +20,7 @@ import { nameProblem } from '../services/Service.js';
 import { forgetSession } from '../services/session.js';
 import { sfx } from '../audio/sfx.js';
 import { music } from '../audio/music.js';
+import { Guide } from './guide.js';
 import { BRAND, TERMS, ACTIONS, CHALLENGE_STATUS } from '../lexicon/terms.js';
 import { roleOf } from '../lexicon/roles.js';
 import { AREAS } from '../lexicon/areas.js';
@@ -28,6 +29,20 @@ import { is, isCommand, cash, gold, weaponField } from '../game/model.js';
 import { OUTFITS } from '../three/outfits.js';
 
 const PREFS_KEY = 'aLaStructs.prefs.v1';
+
+/**
+ * An error for players: the chain and guild software call a restaurant group
+ * a "guild" (and its config file guild.json); say it our way.
+ */
+function plainError(e) {
+  return String(e?.message || e || 'Something went wrong')
+    .replace(/guild\.json unreachable/gi, 'the restaurant group’s details can’t be reached')
+    .replace(/guild\.json unreadable/gi, 'the restaurant group’s details can’t be read')
+    .replace(/guild\.json names another guild/gi, 'the restaurant group’s details describe a different group')
+    .replace(/\bguild API\b/gi, 'restaurant group’s server')
+    .replace(/\bguilds\b/g, 'restaurant groups').replace(/\bGuilds\b/g, 'Restaurant groups')
+    .replace(/\bguild\b/g, 'restaurant group').replace(/\bGuild\b/g, 'Restaurant group');
+}
 
 /** A guild player signed in on this browser before (the webapp core keeps the phrase in `gameState`). */
 function savedSession() {
@@ -174,7 +189,7 @@ export class App {
       const liveOk = this.liveOk();
       card.append(h('div', { class: 'mode-cards' },
         h('button', { class: `mode-card ${st.mode === 'demo' ? 'on' : ''}`, onclick: () => { st.mode = 'demo'; render(); } }, h('b', {}, 'Demo kitchen'), h('small', {}, 'Plays offline against computer rivals, with the real combat rules.')),
-        h('button', { class: `mode-card ${st.mode === 'live' ? 'on' : ''}`, disabled: !liveOk, onclick: () => { st.mode = 'live'; render(); } }, h('b', {}, 'Open for real'), h('small', {}, liveOk ? 'Join a Structs guild and take on real players.' : 'Run À la Structs on your machine to connect to a guild.'))));
+        h('button', { class: `mode-card ${st.mode === 'live' ? 'on' : ''}`, disabled: !liveOk, onclick: () => { st.mode = 'live'; render(); } }, h('b', {}, 'Open for real'), h('small', {}, liveOk ? 'Join a real restaurant group and take on real players.' : 'Run À la Structs on your machine to join a restaurant group.'))));
       card.append(h('button', { class: 'btn wide', onclick: () => {
         const why = nameProblem(st.name);
         if (why) { showName(); nameHint.textContent = why; nameHint.className = 'bad'; nameIn.focus(); return; }
@@ -203,7 +218,7 @@ export class App {
         h('div', { class: 'or' }, h('span', {}, 'or')),
         h('button', { class: 'btn wide sea', onclick: () => this.keyCodeSignIn() }, icon('key'), 'Use a key code from another device'));
     } else {
-      nodes.push(h('div', { class: 'note' }, 'Signing in to a guild needs À la Structs running on your machine.'));
+      nodes.push(h('div', { class: 'note' }, 'Signing in to a restaurant group needs À la Structs running on your machine.'));
     }
     if (demoSave) nodes.push(h('button', { class: 'btn wide sea', onclick: () => this.start({ mode: 'demo', species: this.prefs.species || 'cat', name: this.prefs.name || '', restaurant: this.prefs.restaurant || '' }, { resume: true }) }, 'Continue the demo kitchen'));
     nodes.push(h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
@@ -220,7 +235,6 @@ export class App {
     if (!resume && DemoService.hasSave() && !st.confirmed) {
       return this.confirm('Start a new demo kitchen?', 'Your current demo restaurant, staff and gold will be replaced. To keep playing it, go Back and choose Continue.', 'Start fresh', () => this.start({ ...st, confirmed: true }));
     }
-    if (!resume) { this.prefs.welcomed = false; this.savePrefs(); }
     const svc = new DemoService({
       tickMs: this.prefs.tickMs || 3000, difficulty: this.prefs.difficulty || 'easy', rivalsMayChallenge: this.prefs.rivalsMayChallenge ?? true,
       profile: { name: this.prefs.name || 'You', species: st.species, restaurantName: this.prefs.restaurant || undefined },
@@ -229,6 +243,7 @@ export class App {
     await this.useService(svc);
     await svc.start();
     if (this.prefs.restaurant && !resume) svc.state.restaurant.name = this.prefs.restaurant;
+    if (!resume) Guide.reset('demo', svc.state.me.id);   // a new kitchen starts the guide over
     this.enterGame();
   }
 
@@ -240,7 +255,7 @@ export class App {
   async loadLiveModule() {
     try { return await this.loadLive(); } catch (e) {
       console.error(e);
-      this.titleSay('Couldn’t load the guild client', h('div', { class: 'note warn' }, String(e.message || e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
+      this.titleSay('Couldn’t load the restaurant group client', h('div', { class: 'note warn' }, plainError(e)), h('button', { class: 'btn wide ghost', onclick: () => this.showTitle() }, 'Back'));
       return null;
     }
   }
@@ -255,18 +270,18 @@ export class App {
 
   liveFailed(e, back = () => this.showTitle()) {
     console.error(e);
-    const hint = this.sameOriginGuild() ? 'Check that the guild in GUILD_URL is running (see README).' : 'The guild’s services may be down, or may not accept requests from this page (CORS).';
-    this.titleSay('Couldn’t reach the guild', h('div', { class: 'note warn' }, `${e.message || e}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: back }, 'Back'));
+    const hint = this.sameOriginGuild() ? 'Check that the restaurant group in GUILD_URL is running (see README).' : 'The restaurant group’s services may be down, or may not accept requests from this page (CORS).';
+    this.titleSay('Couldn’t reach the restaurant group', h('div', { class: 'note warn' }, `${plainError(e)}. ${hint}`), h('button', { class: 'btn wide ghost', onclick: back }, 'Back'));
   }
 
   /** Start New Game → Open for real: pick a group, then get a fresh recovery phrase. */
   async startLive() {
-    this.titleSay('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, 'Looking up restaurant groups.'));
+    this.titleSay('Ringing the restaurant group…', h('p', { style: { textAlign: 'center' } }, 'Looking up restaurant groups.'));
     const mod = await this.loadLiveModule();
     if (!mod) return;
     const guild = this.sameOriginGuild() ? null : await this.pickGuild(mod);
     if (!this.sameOriginGuild() && !guild) return this.showNewGame();
-    this.titleSay('Ringing the guild…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${guild?.name || 'the guild'}’s kitchen.`));
+    this.titleSay('Ringing the restaurant group…', h('p', { style: { textAlign: 'center' } }, `Connecting to ${guild?.name || 'the restaurant group'}’s kitchen.`));
     let signedIn;
     try { signedIn = await this.connectLive(mod, guild); } catch (e) { return this.liveFailed(e); }
     if (signedIn) { this.applyProfile(); return this.enterGame(); }
@@ -277,7 +292,7 @@ export class App {
       h('div', { class: 'note warn' }, 'Write these words down somewhere safe. They are the only way back into your restaurant on another device. Nobody — including us — can recover them for you.'),
       h('div', { class: 'phrase' }, phrase), copy,
       h('button', { class: 'btn wide', onclick: async () => {
-        this.titleSay('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you up with the guild and scouting a location. This can take a minute.'));
+        this.titleSay('Opening your restaurant…', h('p', { style: { textAlign: 'center' } }, 'Signing you up with the restaurant group and scouting a location. This can take a minute.'));
         try { await svc.signUp(phrase, this.prefs.name); this.applyProfile(); this.enterGame(); } catch (e) {
           this.titleSay('Sign-up didn’t go through', h('div', { class: 'note warn' }, e.message), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Back'));
         }
@@ -299,18 +314,18 @@ export class App {
         const pid = await mod.playerIdForAddress(address, mod.DEFAULT_REACTOR);
         if (!pid) return fail('No restaurant uses this recovery phrase. To open one, go Back and choose Start New Game.');
         const gid = await mod.guildIdForPlayer(pid, mod.DEFAULT_REACTOR);
-        if (!gid) return fail('This owner isn’t in a restaurant group, so there’s no guild to sign in to.');
+        if (!gid) return fail('This owner isn’t in a restaurant group, so there’s nowhere to sign in to.');
         guild = await mod.resolveGuild(gid, mod.DEFAULT_REACTOR);
       }
-    } catch (e) { return fail(e.message || String(e)); }
-    this.titleSay('Signing you in…', h('p', { style: { textAlign: 'center' } }, `Registering this browser with ${guild?.name || 'your guild'}. Hang tight.`));
+    } catch (e) { return fail(plainError(e)); }
+    this.titleSay('Signing you in…', h('p', { style: { textAlign: 'center' } }, `Registering this browser with ${guild?.name || 'your restaurant group'}. Hang tight.`));
     try {
       const signedIn = await this.connectLive(mod, guild);
       if (!signedIn) await this.svc.recover(phrase);
       this.applyProfile(); this.enterGame();
     } catch (e) {
       console.error(e);
-      this.titleSay('That didn’t work', h('div', { class: 'note warn' }, e.message || String(e)), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Try again'));
+      this.titleSay('That didn’t work', h('div', { class: 'note warn' }, plainError(e)), h('button', { class: 'btn wide ghost', onclick: () => location.reload() }, 'Try again'));
     }
   }
 
@@ -330,7 +345,7 @@ export class App {
       this.applyProfile(); this.enterGame();
     } catch (e) {
       console.error(e);
-      this.titleSay('Couldn’t sign you back in', h('div', { class: 'note warn' }, `${e.message || e}.`),
+      this.titleSay('Couldn’t sign you back in', h('div', { class: 'note warn' }, `${plainError(e)}.`),
         h('button', { class: 'btn wide', onclick: () => location.reload() }, 'Try again'),
         h('button', { class: 'btn wide ghost', onclick: () => this.confirm('Sign out on this browser?', 'You’ll need your recovery phrase to sign back in.', 'Sign out', signOut) }, 'Sign out'));
     }
@@ -355,7 +370,7 @@ export class App {
           this.prefs.guildId = g.id; this.savePrefs();
           resolve(g);
         } catch (e) {
-          err.textContent = e.message || String(e); err.hidden = false;
+          err.textContent = plainError(e); err.hidden = false;
           go.disabled = false; go.textContent = action;
         }
       } }, action);
@@ -421,12 +436,9 @@ export class App {
     this.renderHud();
     this.renderDock();
     this.startHangout();
-    if (!this.prefs.welcomed) {
-      this.prefs.welcomed = true; this.savePrefs();
-      this.modal(icon('store', 'big-icon'), `Welcome to ${this.svc.state.restaurant.name}!`,
-        `Your crew is already at work. Tap anyone (or open Staff) to see what they do. Hire more help, keep your Chef discovering recipes and your Sous Chef turning them into gold — and when you’re ready, send your crew across town for a service challenge. Rival crews drop in too: practise defending from Rivals, or turn visits off in Settings.`,
-        [['Let’s cook', null]]);
-    }
+    // Chef Biscuit greets new owners and walks them through their first day.
+    this.guide = new Guide(this);
+    this.guide.start();
     this.hudTimer = setInterval(() => this.renderHud(), 500);
   }
 
@@ -458,6 +470,7 @@ export class App {
       this.renderChallengeHud();
     } else if (view === 'town') {
       this.enterTown();
+      this.guide?.flag('town');
     } else if (view === 'peek') {
       this.engine.setScene(opts.scene);
       this.readOnly = true;
@@ -494,6 +507,7 @@ export class App {
 
   onChange(what) {
     const s = this.svc.state;
+    this.guide?.check();
     const w = new Set(what);
     const all = w.has('all');
     // A challenge appeared?
@@ -521,6 +535,7 @@ export class App {
   challengeId(ch) { return `${ch.hostId}:${ch.guestId}:${ch.startedTick ?? ''}`; }
 
   onFx(ev) {
+    this.guide?.onFx(ev);
     const sc = this.view === 'challenge' ? this.challengeScene : this.view === 'home' ? this.homeScene : null;
     sc?.onFx(ev);
     switch (ev.kind) {
@@ -707,7 +722,7 @@ export class App {
   /* ── announcer ────────────────────────────────────────────────────────── */
 
   announce({ text, tone }) {
-    this.toasts.push({ text, tone });
+    this.toasts.push({ text: plainError(text), tone });
     if (!this.toastBusy) this.nextToast();
   }
 
@@ -859,6 +874,7 @@ export class App {
     // Only open a card for someone who's actually here.
     const known = this.svc.state.structs.has(id) || this.svc.state.challenge?.structs.has(id) || this.peekStructs?.has(id);
     if (!known) return;
+    if (!this.readOnly && this.svc.state.structs.has(id)) this.guide?.noteSelect(this.svc.state.structs.get(id));
     if (this.targeting) {
       const t = this.targeting;
       if (t.valid.has(id)) {
@@ -957,6 +973,7 @@ export class App {
   async hire(typeId, area) {
     try {
       const id = await this.svc.hire(typeId, area);
+      this.guide?.noteHire(this.svc.state.types.get(typeId));
       this.closeSheet();
       // Show the new hire's card. (On a guild hire() resolves to the signed
       // transaction; the new staff member's id only arrives later from the chain.)
@@ -1160,8 +1177,8 @@ export class App {
   updateChatTitle() {
     if (!this.chatTitle) return;
     const live = this.matrix?.live;
-    this.chatTitle.textContent = live ? `${this.matrix.roomName || this.chatGroupName} · guild chat` : `${this.chatGroupName} chat`;
-    this.chatTitle.title = live ? 'Messages go to your guild’s Matrix room' : 'Town square chat';
+    this.chatTitle.textContent = live ? `${this.matrix.roomName || this.chatGroupName} · group chat` : `${this.chatGroupName} chat`;
+    this.chatTitle.title = live ? 'Messages go to your restaurant group’s chat room' : 'Town square chat';
   }
 
   /** Live only: sign in to the guild's Matrix chat; the town square keeps presence. */
@@ -1187,7 +1204,7 @@ export class App {
     } catch (e) {
       console.warn('[chat]', e);
       this.matrixRetryAt = Date.now() + 5 * 60000;   // try again on a later visit, not every time
-      this.chatNote(`Guild chat isn’t available (${e.message || e}), so you’re chatting in the town square.`);
+      this.chatNote(`Group chat isn’t available (${e.message || e}), so you’re chatting in the town square.`);
     } finally { this.matrixStarting = false; }
   }
 
@@ -1278,7 +1295,7 @@ export class App {
     if (!mod) return;
     const guild = this.sameOriginGuild() ? null : await this.pickGuild(mod, { action: 'Use this group', title: 'Which group is your restaurant in?', blurb: 'Key codes work in the group that made them.' });
     if (!this.sameOriginGuild() && !guild) return this.showContinue();
-    this.titleSay('Ringing the guild…', loading(`Connecting to ${guild?.name || 'the guild'}.`));
+    this.titleSay('Ringing the restaurant group…', loading(`Connecting to ${guild?.name || 'the restaurant group'}.`));
     let signedIn;
     try { signedIn = await this.connectLive(mod, guild); } catch (e) { return this.liveFailed(e, () => this.showContinue()); }
     if (signedIn) { this.applyProfile(); return this.enterGame(); }
@@ -1370,7 +1387,7 @@ export class App {
     this.hangout?.stop(); this.hangout = null;
     this.townScene?.dispose(); this.townScene = null;
     this.challengeScene?.dispose(); this.challengeScene = null;
-    this.svc = null; this.hudTop = null; this.dock = null; this.sheet = null; this.sheetEl = null;
+    this.svc = null; this.hudTop = null; this.dock = null; this.sheet = null; this.sheetEl = null; this.guide = null;
     this.showTitle();
   }
 }

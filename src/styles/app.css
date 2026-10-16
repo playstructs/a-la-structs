@@ -544,3 +544,34 @@ ul.rules { margin: 0; padding-left: 1.2em; color: #6d5646; font-size: .9rem; dis
   .dock button { min-width: 0; flex: 1; padding: 5px 2px 3px; font-size: .6rem; }
   .dock button .icon { width: 24px; height: 24px; }
 }
+
+/* Chef Biscuit's guide */
+.guide { position: absolute; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 84px); z-index: 6; width: min(320px, calc(100vw - 32px)); background: rgba(255, 250, 240, .97); border-radius: 22px; box-shadow: var(--shadow); padding: 12px 14px; display: grid; gap: 6px; border: 3px solid #fff; animation: popIn .25s cubic-bezier(.2,1.6,.4,1); }
+.guide[hidden] { display: none; }
+.guide.pill { width: auto; max-width: min(340px, calc(100vw - 32px)); padding: 0; border: 0; background: none; box-shadow: none; }
+.guide-pill { appearance: none; border: 0; cursor: pointer; display: flex; align-items: center; gap: 8px; background: var(--paper); border-radius: 999px; padding: 4px 14px 4px 4px; box-shadow: var(--shadow); font: inherit; font-weight: 700; color: var(--ink); max-width: 100%; }
+.guide-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .85rem; }
+.guide-head { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+.guide-head b { font-family: var(--display); font-size: 1.05rem; display: block; }
+.guide-head small { color: var(--muted); font-weight: 700; font-size: .75rem; }
+.guide-dots { display: flex; gap: 4px; margin-top: 3px; }
+.guide-dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.guide-dots i.done { background: var(--leaf); }
+.guide-dots i.now { background: var(--butter-d); box-shadow: 0 0 0 2px rgba(227, 168, 38, .3); }
+.guide-head .x { appearance: none; border: 0; background: var(--paper-2); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; color: var(--muted); display: grid; place-items: center; }
+.guide-head .x .icon { width: 14px; height: 14px; }
+.guide-face { width: 44px; height: 44px; border-radius: 50%; background: var(--paper-2); border: 3px solid var(--butter); object-fit: cover; flex: none; }
+.guide-pill .guide-face { width: 34px; height: 34px; }
+.guide-face.big { width: 96px; height: 96px; margin: 0 auto; display: block; }
+.guide p { margin: 0; font-size: .9rem; line-height: 1.4; }
+.guide-say { color: var(--ink); }
+.guide-todo { background: var(--paper-2); border-radius: 12px; padding: 6px 10px; }
+.guide-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.tut-glow { outline: 3px solid var(--butter) !important; outline-offset: 3px; box-shadow: 0 0 0 8px rgba(255, 209, 102, .45), var(--shadow) !important; animation: tutGlow 1.2s ease-in-out infinite; position: relative; z-index: 2; }
+@keyframes tutGlow { 50% { box-shadow: 0 0 0 14px rgba(255, 209, 102, .15), var(--shadow); } }
+@media (prefers-reduced-motion: reduce) { .tut-glow { animation: none; } .guide { animation: none; } }
+.in-challenge .guide { display: none; }   /* the challenge banner needs the space */
+@media (max-width: 720px) {
+  .guide { left: 8px; top: calc(env(safe-area-inset-top, 0px) + 150px); width: calc(100vw - 16px); padding: 10px 12px; }
+  .guide-say { display: none; }
+}

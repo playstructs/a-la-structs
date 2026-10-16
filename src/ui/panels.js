@@ -141,7 +141,7 @@ export function staffSheet(app, id) {
       if (t.canDefend) {
         const off = !is.online(s);
         if (s.protects && !off) foot.push(h('button', { class: 'btn ghost small', onclick: () => app.act(() => svc.uncover(s.id)) }, words.defenseClear));
-        else foot.push(h('button', { class: 'btn sea small', disabled: off, title: off ? 'Clock them in first — only staff on shift can cover.' : null, onclick: () => app.beginCover(s.id) }, icon('shield'), words.defenseSet));
+        else foot.push(h('button', { class: 'btn sea small', 'data-tut': 'cover', disabled: off, title: off ? 'Clock them in first — only staff on shift can cover.' : null, onclick: () => app.beginCover(s.id) }, icon('shield'), words.defenseSet));
         if (off) foot.push(h('span', { class: 'why' }, 'Clock them in to cover for someone.'));
       }
       if (t.unitDefenses === 'stealthMode' && is.online(s)) foot.push(h('button', { class: 'btn butter small', onclick: () => app.act(() => svc.blendIn(s.id, !is.hidden(s))) }, is.hidden(s) ? words.stealthOff : words.stealthOn, h('span', { class: 'tagchip', title: HUSTLE_NOTE(t.stealthActivateCharge || 0) }, icon('hustle'), String(t.stealthActivateCharge || 0))));
@@ -153,7 +153,7 @@ export function staffSheet(app, id) {
         app.investDraft = app.investDraft || {};
         const inp = h('input', { type: 'number', min: '1', value: app.investDraft[s.id] ?? '5', id: `invest-${s.id}`, style: { width: '90px' }, 'aria-label': 'Gold to invest', oninput: (e) => { app.investDraft[s.id] = e.target.value; } });
         body.push(h('div', { class: 'field' }, h('label', { for: `invest-${s.id}` }, `${TERMS.infuse} (you have ${gold(st.wallet.gold)})`),
-          h('div', { style: { display: 'flex', gap: '8px' } }, inp, h('button', { class: 'btn butter small', onclick: () => app.act(() => svc.investGold(s.id, inp.value)) }, icon('gold'), 'Invest'))));
+          h('div', { style: { display: 'flex', gap: '8px' } }, inp, h('button', { class: 'btn butter small', 'data-tut': 'invest', onclick: () => app.act(async () => { await svc.investGold(s.id, inp.value); app.guide?.flag('invested'); }) }, icon('gold'), 'Invest'))));
       }
     }
   }
@@ -195,7 +195,7 @@ export function hireSheet(app, section = 'space') {
       areas.length > 1 ? h('div', { class: 'actions' }, h('small', { style: { fontWeight: 800, color: 'var(--muted)' } }, 'Where:'),
         ...areas.map((a) => h('button', { class: `chip-btn ${a === choice ? 'on' : ''}`, onclick: () => { app.hireArea = { ...(app.hireArea || {}), [t.id]: a }; app.openSheet('hire', section); } }, AREAS[a].short))) : null,
       h('div', { class: 'actions' },
-        h('button', { class: `btn small ${role.kind === 'equipment' ? 'sea' : ''}`, disabled: !!blocker, onclick: () => app.hire(t.id, choice) }, role.kind === 'equipment' ? `Buy` : `Hire`, ' ', h('span', {}, role.kind === 'equipment' ? '' : `· ${AREAS[choice].short}`)),
+        h('button', { class: `btn small ${role.kind === 'equipment' ? 'sea' : ''}`, 'data-tut': role.kind === 'equipment' ? null : 'hire', 'data-hire': t.type, disabled: !!blocker, onclick: () => app.hire(t.id, choice) }, role.kind === 'equipment' ? `Buy` : `Hire`, ' ', h('span', {}, role.kind === 'equipment' ? '' : `· ${AREAS[choice].short}`)),
         blocker ? h('span', { class: 'why' }, blocker) : null),
     );
     body.push(card);
@@ -319,7 +319,7 @@ export function rivalsSheet(app, result, f) {
   const blocker = st.challenge && st.challenge.status === 'ongoing' ? 'You’re already in a service challenge.' : st.crew.status !== 'home' ? 'Your crew is out.' : !svc.manager() ? 'You need a Manager to lead the crew. Hire a new one from Hire.' : null;
   if (svc.mode === 'demo' && !blocker) {
     body.push(h('div', { class: 'note' }, h('b', {}, 'Practice defending: '), 'invite a rival crew to dine at your place right now.', ' ',
-      h('button', { class: 'btn small butter', style: { marginTop: '8px' }, onclick: () => { app.closeSheet(); svc.incomingChallenge(); } }, icon('door'), 'Invite them over')));
+      h('button', { class: 'btn small butter', 'data-tut': 'practice', style: { marginTop: '8px' }, onclick: () => { app.closeSheet(); svc.incomingChallenge(); } }, icon('door'), 'Invite them over')));
   }
   if (!result) body.push(h('p', {}, 'Looking around town…'));
   else if (!result.list.length) body.push(h('p', {}, active || f.query ? 'Nobody matches that. Try fewer filters.' : 'No rivals around right now.'));
@@ -339,7 +339,7 @@ export function rivalsSheet(app, result, f) {
           r.reputation != null ? h('span', { class: 'tagchip' }, icon('sparkle'), `${r.reputation} rep`) : null,
           r.staff != null ? h('span', { class: 'tagchip' }, icon('staff'), `${r.staff} staff`) : null),
         h('div', { class: 'actions' },
-          h('button', { class: 'btn small berry', disabled: !!why, title: why, onclick: () => app.challenge(r) }, icon('bell'), 'Send the crew'),
+          h('button', { class: 'btn small berry', 'data-tut': why ? null : 'send', disabled: !!why, title: why, onclick: () => app.challenge(r) }, icon('bell'), 'Send the crew'),
           h('button', { class: 'btn small ghost', onclick: () => app.peek(r.id, true) }, 'Size them up'),
           h('button', { class: 'btn small ghost', onclick: () => app.openPage('office', 'profile', { id: r.id }) }, 'Owner card')),
       ));
@@ -388,6 +388,13 @@ export function settingsSheet(app) {
   // Which songs play
   const { mode, song } = music.choice;
   const now = music.nowPlaying;
+  // Chef Biscuit's guide
+  if (app.guide) {
+    body.push(h('div', { class: 'section-title' }, 'Recipe for Success'));
+    body.push(h('div', { class: 'tabs' },
+      h('button', { class: 'chip-btn', disabled: app.guide.finished(), onclick: () => { app.guide.show(); app.closeSheet(); } }, app.guide.finished() ? 'All objectives done' : 'Show Chef Biscuit'),
+      h('button', { class: 'chip-btn', onclick: () => app.confirm('Start the tutorial over?', 'Chef Biscuit will walk you through every objective again, one at a time.', 'Start over', () => { app.closeSheet(); app.guide.restart(); }) }, 'Start the tutorial over')));
+  }
   body.push(h('div', { class: 'section-title' }, 'Music'));
   body.push(h('div', { class: 'tabs', role: 'radiogroup', 'aria-label': 'Which music plays' }, ...[['scene', 'Fits the scene'], ['shuffle', 'Shuffle all'], ['one', 'One song']].map(([m, label]) =>
     h('button', { class: `chip-btn ${mode === m ? 'on' : ''}`, role: 'radio', 'aria-checked': mode === m ? 'true' : 'false',

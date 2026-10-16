@@ -151,7 +151,7 @@ export class LiveService extends Service {
     // enough hustle, out of reach…) still fail at once.
     scm.queue.canRetry = (tx) => {
       const again = tx.attempts < 1 + ORDER_RETRIES && isTransient(tx.error);
-      if (again) this.toast('An order didn’t reach the guild — trying again…', 'info');
+      if (again) this.toast('An order didn’t reach the restaurant group — trying again…', 'info');
       return again;
     };
 
@@ -238,7 +238,7 @@ export class LiveService extends Service {
    */
   async chatSignIn() {
     const gs = this.gs;
-    if (!gs.signingAccount || !gs.thisGuild) throw new Error('Sign in to the guild first');
+    if (!gs.signingAccount || !gs.thisGuild) throw new Error('Sign in to your restaurant group first');
     const login = await this.auth.buildLoginRequest();
     const session = await signInViaGuild(this.endpoints.api, {
       address: login.address, pubkey: login.pubkey, signature: login.signature,
@@ -258,7 +258,7 @@ export class LiveService extends Service {
     gs.mnemonic = mnemonic;
     gs.signupRequest.username = username || null;
     const ok = await this.auth.signup(mnemonic);
-    if (!ok) throw new Error('The guild did not accept the sign-up.');
+    if (!ok) throw new Error('The restaurant group didn’t accept the sign-up.');
     // The webapp waits for the PLAYER_CREATED frame on GRASS. If the stream is
     // down that never comes, so also watch the chain directly (LCD) and finish
     // the login ourselves if GRASS hasn't a few seconds after the player lands.
@@ -273,7 +273,7 @@ export class LiveService extends Service {
     const gs = this.gs;
     const done = new Promise((resolve) => window.addEventListener(EVENTS.LOGIN_COMPLETE, resolve, { once: true }));
     const ok = await this.auth.loginWithMnemonic(mnemonic.trim());
-    if (!ok) throw new Error('Couldn’t register this device. Check the recovery phrase and that you belong to this guild.');
+    if (!ok) throw new Error('Couldn’t register this device. Check the recovery phrase and that you belong to this restaurant group.');
     await Promise.race([done, this.waitFor(() => gs.keyPlayers[P.PLAYER].planet, 180000)]);
     gs.save();
     await this.afterLogin();
@@ -300,7 +300,7 @@ export class LiveService extends Service {
     if (note) this.toast(note, 'info');
     const t0 = Date.now();
     while (!fn()) {
-      if (Date.now() - t0 > ms) throw new Error('Timed out waiting for the guild.');
+      if (Date.now() - t0 > ms) throw new Error('Timed out waiting for the restaurant group.');
       await new Promise((r) => setTimeout(r, 800));
     }
   }
@@ -319,7 +319,7 @@ export class LiveService extends Service {
     };
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resume(); });
     window.addEventListener('pageshow', (e) => { if (e.persisted) resume(); });
-    window.addEventListener('online', () => { resume(); this.toast('Back online — reconnecting to the guild.', 'info'); });
+    window.addEventListener('online', () => { resume(); this.toast('Back online — reconnecting to your restaurant group.', 'info'); });
     window.addEventListener('offline', () => this.toast('You’re offline. Orders wait until you’re back.', 'bad'));
     window.addEventListener('focus', () => resume());
   }
@@ -366,7 +366,7 @@ export class LiveService extends Service {
   async requestKey(owner) {
     const gs = this.gs;
     const ok = await this.auth.addNewDevice(owner.raw);
-    if (!ok) throw new Error('The guild didn’t take the request. The code may have expired — make a new one.');
+    if (!ok) throw new Error('The restaurant group didn’t take the request. The code may have expired — make a new one.');
     const gid = gs.thisGuild.id, addr = gs.signingAccount.address;
     const frame = this.waitForFrame(`A_LA_STRUCTS_KEY_GRANTED`,
       (m) => m.category === 'player_address' && m.subject === `structs.player.${gid}.${owner.playerId}` && m.status === 'approved' && m.address === addr);
@@ -389,7 +389,7 @@ export class LiveService extends Service {
     const gs = this.gs;
     const done = new Promise((resolve) => window.addEventListener(EVENTS.LOGIN_COMPLETE, resolve, { once: true }));
     const ok = await this.auth.login(owner.playerId);
-    if (!ok) throw new Error('The guild didn’t let this key in. Try again from your other device.');
+    if (!ok) throw new Error('The restaurant group didn’t let this key in. Try again from your other device.');
     await Promise.race([done, this.waitFor(() => gs.keyPlayers[P.PLAYER].planet, 180000)]);
     gs.save();
     await this.afterLogin();
@@ -607,7 +607,7 @@ export class LiveService extends Service {
     this.awaiting = (this.awaiting || 0) + 1;
     let tx;
     try { tx = await promise; } finally { this.awaiting--; }
-    if (tx && tx.status && tx.status !== TX_STATUS.SUCCEEDED) throw new Error(this.friendlyError(tx.error || tx.lastError || 'The guild rejected it.'));
+    if (tx && tx.status && tx.status !== TX_STATUS.SUCCEEDED) throw new Error(this.friendlyError(tx.error || tx.lastError || 'The restaurant group rejected it.'));
     if (okText) this.toast(okText, 'good');
     this.schedulePull();
     return tx;
@@ -647,7 +647,7 @@ export class LiveService extends Service {
   }
   async serve(attackerId, targetId, ws = 'primaryWeapon') {
     const t = this.typeOf(this.find(attackerId));
-    this.toast('Order placed — the guild will settle it next tick.', 'info');
+    this.toast('Order placed — it’ll be settled next tick.', 'info');
     return this.settle(this.signing.queueMsgStructAttack(attackerId, [targetId], ws, weaponField(t, ws, 'Charge') || 0));
   }
   async investGold(structId, amount) {
@@ -837,7 +837,7 @@ export class LiveService extends Service {
     req.address = address;
     req.permissions = this.permissionManager.getDefaultPlayerPermissions() | (manage ? MANAGE_KEYS : 0) | (send ? SEND_GOLD : 0);
     const r = await this.api.setAddressPermissions(req);
-    if (!r.success) throw new Error('The guild didn’t save that change.');
+    if (!r.success) throw new Error('The restaurant group didn’t save that change.');
     this.toast('Key updated.', 'good');
   }
 
@@ -877,7 +877,7 @@ export class LiveService extends Service {
     req.logged_in_address = this.myAddress();
     req.guild_id = this.gs.thisGuild.id;
     const r = await this.api.createActivationCode(req);
-    if (!r.success || !r.data?.code) throw new Error('The guild couldn’t make a key code right now.');
+    if (!r.success || !r.data?.code) throw new Error('The restaurant group couldn’t make a key code right now.');
     const code = String(r.data.code);
     const request = this.waitForFrame(`A_LA_STRUCTS_KEY_REQUEST_${code}`,
       (m) => m.category === 'player_address_pending' && m.subject === `structs.address.register.${code}` && !m.permissions);
@@ -898,7 +898,7 @@ export class LiveService extends Service {
     const approved = this.waitForFrame(`A_LA_STRUCTS_KEY_APPROVED_${p.code}`,
       (m) => m.category === 'player_address' && m.subject === `structs.player.${gid}.${pid}` && m.status === 'approved' && m.address === p.address, 3 * 60 * 1000);
     const ok = await this.auth.activateDevice(p);
-    if (!ok) { approved.cancel(); throw new Error('The guild didn’t accept that key.'); }
+    if (!ok) { approved.cancel(); throw new Error('The restaurant group didn’t accept that key.'); }
     await approved.catch(() => {});   // the chain may be slow to say so; the key works either way
     this.api.getPlayerAddressCount(pid, true).catch(() => {});
     this.toast('New key handed over. That device is signing in.', 'good');

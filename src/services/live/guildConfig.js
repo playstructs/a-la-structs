@@ -120,7 +120,7 @@ export function readGuildJson(json, record) {
   return {
     id: String(record.id),
     endpoint: record.endpoint,
-    name: clip(g.name, 80) || `Guild ${record.id}`,
+    name: clip(g.name, 80) || `Restaurant group ${record.id}`,
     tag: clip(g.tag, 12) || '',
     description: clip(g.description, 600) || '',
     logo: safeLink(g.logo),
@@ -153,7 +153,7 @@ export async function listGuilds(reactor = DEFAULT_REACTOR) {
 export async function getGuildRecord(guildId, reactor = DEFAULT_REACTOR) {
   const j = await lcd(`/structs/guild/${encodeURIComponent(guildId)}`, reactor);
   const g = j.Guild || j.guild || j;
-  if (!g || !g.id) throw new Error(`Guild ${guildId} isn’t on the chain`);
+  if (!g || !g.id) throw new Error(`Restaurant group ${guildId} isn’t on the chain`);
   return g;
 }
 
@@ -199,12 +199,12 @@ export async function browsableGuilds(reactor = DEFAULT_REACTOR) {
   const rows = await Promise.all(records.map(async (r) => {
     try {
       const g = readGuildJson(await fetchGuildJson(r.endpoint), r);
-      if (!g.api) return { ...g, ok: false, why: 'no guild API (can’t take signups)' };
+      if (!g.api) return { ...g, ok: false, why: 'not taking new restaurants from this site yet' };
       const reach = await canReach(g.api);
-      if (reach === false) return { ...g, ok: false, why: 'guild API refuses this site (CORS)' };
-      return { ...g, ok: true, why: reach === null ? 'guild API didn’t answer just now' : '' };
+      if (reach === false) return { ...g, ok: false, why: 'doesn’t accept players from this site' };
+      return { ...g, ok: true, why: reach === null ? 'didn’t answer just now' : '' };
     } catch (e) {
-      return { id: String(r.id), name: `Guild ${r.id}`, endpoint: r.endpoint, ok: false, unreadable: true, why: e.message };
+      return { id: String(r.id), name: `Restaurant group ${r.id}`, endpoint: r.endpoint, ok: false, unreadable: true, why: e.message };
     }
   }));
   rows.sort((a, b) => (b.ok - a.ok) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
@@ -218,8 +218,8 @@ export async function browsableGuilds(reactor = DEFAULT_REACTOR) {
 export async function resolveGuild(guildId, reactor = DEFAULT_REACTOR) {
   const record = await getGuildRecord(guildId, reactor);
   const g = readGuildJson(await fetchGuildJson(record.endpoint), record);
-  if (!g.api) throw new Error(`${g.name} doesn’t run a guild API, so it can’t take browser players`);
-  if (!g.grass) throw new Error('No event stream available (the guild has none and VITE_GRASS_URL is off)');
+  if (!g.api) throw new Error(`${g.name} isn’t set up to take players from this site yet`);
+  if (!g.grass) throw new Error('No live updates available for this restaurant group (it has no event stream and VITE_GRASS_URL is off)');
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ id: g.id, name: g.name, at: Date.now() })); } catch (e) { /* storage off */ }
   return { ...g, reactor };
 }

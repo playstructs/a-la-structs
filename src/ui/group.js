@@ -146,13 +146,13 @@ const bank = {
       go.className = `btn small ${dd < 0 ? 'berry' : 'butter'}`;
       go.lastChild.textContent = dd > 0 ? `Deposit ${gold(dd)} gold` : dd < 0 ? `Withdraw ${gold(-dd)} gold` : 'Move the slider';
     };
-    const go = h('button', { class: 'btn small butter', onclick: () => {
+    const go = h('button', { class: 'btn small butter', 'data-tut': 'deposit', onclick: () => {
       const dd = d.target - b.invested;
       const text = dd > 0
         ? `${gold(dd)} gold leaves your wallet and goes into ${st.me.guildName || 'the group'}’s bank. Your takings go to about ${cash(bankTakings(d.target, b))} per tick.`
         : `${gold(-dd)} gold comes out of the bank. It has to clear before you can spend it, and your takings drop to about ${cash(bankTakings(d.target, b))} per tick.`;
       app.confirm(dd > 0 ? 'Deposit gold?' : 'Withdraw gold?', text, dd > 0 ? 'Deposit' : 'Withdraw', () => app.act(async () => {
-        if (dd > 0) await app.svc.bankDeposit(dd); else await app.svc.bankWithdraw(-dd);
+        if (dd > 0) { await app.svc.bankDeposit(dd); app.guide?.flag('invested'); } else await app.svc.bankWithdraw(-dd);
         app.bankDraft = null;
         await app.reloadPage();
       }));

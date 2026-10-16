@@ -67,10 +67,10 @@ const httpsOrLoopback = (u) => {
  */
 export async function signInViaGuild(guildApi, login, deviceId = matrixDeviceId()) {
   const r = await req(`${guildApi.replace(/\/+$/, '')}/auth/matrix`, { method: 'POST', json: { ...login, device_id: deviceId } });
-  if (r.status === 404) throw new Error('This guild doesn’t offer chat sign-in yet (no /auth/matrix)');
+  if (r.status === 404) throw new Error('This restaurant group doesn’t offer chat sign-in yet');
   const d = r.data?.data;
   if (!r.ok || !r.data?.success || !d?.access_token) throw new Error(r.data?.errors?.[0] || r.data?.error || `Chat sign-in was refused (${r.status})`);
-  for (const k of ['token_endpoint', 'revocation_endpoint']) if (d[k] && !httpsOrLoopback(d[k])) throw new Error('The guild returned an insecure auth endpoint; not using it');
+  for (const k of ['token_endpoint', 'revocation_endpoint']) if (d[k] && !httpsOrLoopback(d[k])) throw new Error('The restaurant group returned an insecure sign-in address; not using it');
   return { ...d, device_id: d.device_id || deviceId, expires_at: Date.now() + Math.max(60, Number(d.expires_in || 300)) * 1000 };
 }
 
@@ -198,7 +198,7 @@ export class MatrixChat extends EventTarget {
       const ok = await join(c.alias || c.id);
       if (ok) { remember(ok); return this.useRoom(ok); }
     }
-    throw new Error(listed.length ? 'Couldn’t join any of the guild’s chat rooms' : 'The guild hasn’t opened a public chat room yet');
+    throw new Error(listed.length ? 'Couldn’t join any of the restaurant group’s chat rooms' : 'The restaurant group hasn’t opened a public chat room yet');
   }
 
   roomKey() { return `aLaStructs.matrix.room.v1:${this.hs}:${this.userId}`; }
