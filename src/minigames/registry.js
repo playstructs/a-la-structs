@@ -15,7 +15,7 @@ export const INTERFACE_NAME = 'a-la-structs';
 
 export const GAMES = [
   {
-    key: 'line-cook', type: 'Tank', title: 'Keep the Line Moving', seconds: 60, unit: 'plates', stars: [15, 28, 40],
+    key: 'line-cook', type: 'Tank', title: 'Keep the Line Moving', seconds: 60, unit: 'plates', stars: [12, 24, 34],
     how: 'Plates slide down the line on the beat. Tap the ingredient each plate is missing as it reaches you. Keep the rhythm — the line speeds up!',
     load: () => import('./games/lineCook.js'),
   },

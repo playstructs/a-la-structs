@@ -15,20 +15,19 @@ import * as THREE from 'three';
 import { toonMat, glowMat, gradientMap } from '../../three/toon.js';
 
 const PANTRY = [
-  { kind: 'tomato', name: 'Tomato' }, { kind: 'cheese', name: 'Cheese' }, { kind: 'lettuce', name: 'Lettuce' },
-  { kind: 'onion', name: 'Onion' }, { kind: 'bacon', name: 'Bacon' }, { kind: 'egg', name: 'Egg' },
+  { kind: 'tomato', name: 'Tomato' }, { kind: 'cheese', name: 'Cheese' },
+  { kind: 'lettuce', name: 'Lettuce' }, { kind: 'bacon', name: 'Bacon' },
 ];
 const DISHES = [
-  { kind: 'burger', needs: ['cheese', 'lettuce', 'tomato', 'onion', 'bacon'] },
-  { kind: 'taco', needs: ['lettuce', 'cheese', 'tomato', 'onion'] },
-  { kind: 'salad', needs: ['lettuce', 'tomato', 'onion', 'cheese', 'egg'] },
-  { kind: 'ramen', needs: ['egg', 'onion', 'bacon'] },
-  { kind: 'toast', needs: ['egg', 'bacon', 'tomato', 'cheese'] },
-  { kind: 'pizza', needs: ['cheese', 'tomato', 'onion', 'bacon'] },
+  { kind: 'burger', needs: ['cheese', 'lettuce', 'tomato', 'bacon'] },
+  { kind: 'taco', needs: ['lettuce', 'cheese', 'tomato'] },
+  { kind: 'salad', needs: ['lettuce', 'tomato', 'cheese'] },
+  { kind: 'toast', needs: ['bacon', 'tomato', 'cheese'] },
+  { kind: 'pizza', needs: ['cheese', 'tomato', 'bacon'] },
 ];
 const SLOT = 104;          // distance between stations on the line (view units)
-const START_BEAT = 0.82;   // seconds per beat at the start…
-const END_BEAT = 0.42;     // …and at the end
+const START_BEAT = 1.09;   // seconds per beat at the start…
+const END_BEAT = 0.56;     // …and at the end
 const SCALE = 150;         // view units per metre
 const TOP = 0.72;          // counter / belt height (m): low, so the cook shows over it
 const FOOD = 2.1;          // food and plates are drawn larger than life
@@ -53,8 +52,8 @@ export default function create(ctx) {
   function layout() {
     const { W, H } = view;
     L.vertical = view.portrait;
-    const cols = L.vertical ? 3 : 6, rows = Math.ceil(PANTRY.length / cols);
-    const bw = Math.min(96, (W - 32 - (cols - 1) * 10) / cols), bh = L.vertical ? 74 : 84;
+    const cols = PANTRY.length, rows = 1;
+    const bw = Math.min(L.vertical ? 96 : 120, (W - 32 - (cols - 1) * 10) / cols), bh = L.vertical ? 74 : 84;
     const top = H - 14 - rows * bh - (rows - 1) * 10;
     const left = (W - (cols * bw + (cols - 1) * 10)) / 2;
     bins = PANTRY.map((p, i) => ({ ...p, x: left + (i % cols) * (bw + 10), y: top + Math.floor(i / cols) * (bh + 10), w: bw, h: bh }));
