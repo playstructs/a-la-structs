@@ -121,6 +121,15 @@ export class LiveService extends Service {
     }
 
     const gameState = this.gs = new GameState();
+    // The core reports a rejected transaction only as "Broadcast rejected: code N"
+    // and drops the chain's reason. Wrap the signing client as it's set so we
+    // keep that reason (rawLog) and can tell the player what actually went wrong.
+    let signingClient = null;
+    Object.defineProperty(gameState, 'signingClient', {
+      configurable: true, enumerable: true,
+      get: () => signingClient,
+      set: (c) => { signingClient = c ? this.keepRejections(c) : c; },
+    });
     globalThis.gameState = gameState;
     const guildAPI = this.api = new GuildAPI();
     guildAPI.apiUrl = this.endpoints.api;
@@ -495,6 +504,10 @@ export class LiveService extends Service {
       for (const x of Object.values(kp.structs || {})) {
         const n = normalizeStruct(x, s.types);
         if (kp === guest && n.locationType !== 'fleet') continue;            // only the visiting crew
+        // The chain only lets crew at this restaurant serve each other, so leave
+        // out anyone whose crew is away somewhere else.
+        n.at = this.whereIs(n, kp);
+        if (n.at && info.planet_id && n.at !== info.planet_id) continue;
         structs.set(n.id, n);
       }
     }
@@ -605,17 +618,45 @@ export class LiveService extends Service {
     // Failures of actions started here surface through settle(); this catches
     // the background ones (proof-of-work completions, raid completion).
     if (e.status && e.status !== TX_STATUS.SUCCEEDED && e.status !== TX_STATUS.CANCELLED && e.error && !this.awaiting) {
-      this.toast(this.friendlyError(e.error), 'bad');
+      this.toast(this.friendlyError(this.whyFailed(e)), 'bad');
     }
   }
 
   /* ── actions ──────────────────────────────────────────────────────────── */
 
+  /** Remember why the chain refused a transaction (the core only keeps the code). */
+  keepRejections(client) {
+    if (client.__keepsRejections) return client;
+    const send = client.signAndBroadcast.bind(client);
+    client.signAndBroadcast = async (...args) => {
+      const res = await send(...args);
+      if (res && res.code) {
+        const typeUrl = args[1]?.[0]?.typeUrl;
+        this.lastRejection = { code: res.code, reason: String(res.rawLog || res.log || ''), typeUrl, at: Date.now() };
+        console.warn('[chain] rejected', typeUrl, `code ${res.code}:`, this.lastRejection.reason);
+      }
+      return res;
+    };
+    client.__keepsRejections = true;
+    return client;
+  }
+
+  /** The chain's own reason for a failed transaction, if we caught it, else the core's error text. */
+  whyFailed(tx) {
+    const r = this.lastRejection;
+    const typeUrl = tx?.message?.typeUrl || tx?.typeUrl;
+    if (r && r.reason && Date.now() - r.at < 120000 && (!typeUrl || !r.typeUrl || r.typeUrl === typeUrl)) {
+      // "failed to execute message; message index: 0: <reason>: <codespace error>"
+      return r.reason.replace(/^failed to execute message; message index: \d+: /, '');
+    }
+    return tx?.error || tx?.lastError || 'The restaurant group rejected it.';
+  }
+
   async settle(promise, okText) {
     this.awaiting = (this.awaiting || 0) + 1;
     let tx;
     try { tx = await promise; } finally { this.awaiting--; }
-    if (tx && tx.status && tx.status !== TX_STATUS.SUCCEEDED) throw new Error(this.friendlyError(tx.error || tx.lastError || 'The restaurant group rejected it.'));
+    if (tx && tx.status && tx.status !== TX_STATUS.SUCCEEDED) throw new Error(this.friendlyError(this.whyFailed(tx)));
     if (okText) this.toast(okText, 'good');
     this.schedulePull();
     return tx;
@@ -673,14 +714,27 @@ export class LiveService extends Service {
     return s;
   }
 
+  /** Which planet a struct is at: its own for planet crew, its fleet's for fleet crew. */
+  whereIs(n, kp) {
+    if (n.locationType !== 'fleet') return n.locationId;
+    const fleet = kp?.fleet;
+    return fleet && (!n.locationId || n.locationId === fleet.id) ? (fleet.location_id ?? null) : null;
+  }
+
   serveBlocker(attackerId, targetId, ws) {
     const a = this.state.challenge?.structs.get(attackerId) || this.state.structs.get(attackerId);
     const tg = this.state.challenge?.structs.get(targetId);
     if (!a || !tg) return 'Not here';
     const at = this.typeOf(a);
     if (!hasWeapon(at, ws)) return 'No such move';
+    if (!is.built(a)) return 'Still onboarding';
     if (!is.online(a)) return 'Off shift';
     if (is.destroyed(tg)) return 'Already left';
+    if (!is.built(tg)) return 'Not ready yet';
+    const here = this.state.challenge?.planetId;
+    const aAt = a.at !== undefined ? a.at : this.whereIs(a, this.gs?.keyPlayers[P.PLAYER]);
+    if (here && aAt && aAt !== here) return 'Not at this restaurant';
+    if (here && tg.at && tg.at !== here) return 'Not at this restaurant';
     let mask = weaponField(at, ws, 'Ambits') || 0;
     if (mask & 32) mask |= AREAS[a.ambit].bit;
     if (!(mask & AREAS[tg.ambit].bit)) return 'Can’t reach that area';
