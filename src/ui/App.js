@@ -1115,8 +1115,11 @@ export class App {
       this.townScene.addEventListener('peek', (e) => this.peek(e.detail.playerId, e.detail.rival, 'town'));
       this.townScene.hangout = this.hangout;
     }
-    this.townScene.setMembers(g.members);
-    try { this.townScene.setRivals(await this.svc.findRivals('')); } catch (e) { /* rivals optional */ }
+    // Members between restaurants (no planet) have no lot in town; they're still in Group › Members.
+    this.townScene.setMembers(g.members.filter((m) => m.isMe || m.planetId));
+    // Across the bridge: other groups only (the search can include our own members).
+    const ours = new Set(g.members.map((m) => m.id));
+    try { this.townScene.setRivals((await this.svc.findRivals('')).filter((r) => !ours.has(r.id))); } catch (e) { /* rivals optional */ }
     this.engine.setScene(this.townScene);
     if (this.hangout) this.townScene.setPeers([...this.hangout.peers.values()]);
     this.renderTownUi(g);

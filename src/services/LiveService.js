@@ -697,14 +697,39 @@ export class LiveService extends Service {
   async getGroup() {
     const gid = this.state.me.guildId || this.gs.thisGuild?.id;
     const roster = gid ? await this.api.getGuildRoster(gid) : [];
+    const s = this.state, me = s.me.id;
+    const members = roster.map((m) => ({
+      id: m.id, name: m.username || `Owner ${m.id}`, species: m.id === me ? s.me.species : speciesFor(m.id, 'owner'),
+      restaurantName: m.planet_id ? restaurantNameFor(m.planet_id, m.username) : 'Looking for a location',
+      planetId: m.planet_id, recipes: Number(m.ore || 0), staff: null, online: null, isMe: m.id === me,
+      crewHome: m.fleet_status === 'onStation',
+    }));
+    // The roster's planet_id is often empty or stale, but the raid search
+    // (filtered to our group) knows who has a restaurant: fill it in from there,
+    // and add anyone the search finds that the roster missed.
+    if (gid) {
+      const byId = new Map(members.map((m) => [m.id, m]));
+      for (let page = 1; page <= 5; page++) {
+        let res;
+        try { res = await this.searchRivals({ groupId: gid, page }); } catch (e) { break; }
+        for (const r of res.list) {
+          if (!r.planetId) continue;
+          const m = byId.get(r.id);
+          if (m) Object.assign(m, { planetId: r.planetId, restaurantName: r.restaurantName, recipes: r.recipes, crewHome: r.crewHome });
+          else { const add = { ...r, online: null, isMe: false }; members.push(add); byId.set(r.id, add); }
+        }
+        if (page >= res.pages) break;
+      }
+    }
+    // For ourselves, trust our own player state and restaurant name.
+    if (me && s.restaurant?.id) {
+      let self = members.find((m) => m.isMe);
+      if (!self) members.unshift(self = { id: me, name: s.me.name, species: s.me.species, isMe: true, staff: null, online: true });
+      Object.assign(self, { planetId: s.restaurant.id, restaurantName: s.restaurant.name, recipes: s.wallet.recipes, crewHome: s.crew.status === 'home' });
+    }
     return {
-      group: { id: gid, name: this.state.me.guildName || this.gs.thisGuild?.name, tag: this.state.me.guildTag },
-      members: roster.map((m) => ({
-        id: m.id, name: m.username || `Owner ${m.id}`, species: m.id === this.state.me.id ? this.state.me.species : speciesFor(m.id, 'owner'),
-        restaurantName: m.planet_id ? restaurantNameFor(m.planet_id, m.username) : 'Looking for a location',
-        planetId: m.planet_id, recipes: Number(m.ore || 0), staff: null, online: null, isMe: m.id === this.state.me.id,
-        crewHome: m.fleet_status === 'onStation',
-      })),
+      group: { id: gid, name: s.me.guildName || this.gs.thisGuild?.name, tag: s.me.guildTag },
+      members,
     };
   }
 
