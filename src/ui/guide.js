@@ -200,7 +200,7 @@ export class Guide {
     const me = this.app.svc.state.me.id;
     if (ev.kind === 'defense' && ev.on) {
       const d = this.app.svc.state.structs.get(ev.defender) || this.app.svc.state.challenge?.structs.get(ev.defender);
-      if (!d || d.owner === me) this.flag('cover');
+      if (d && d.owner === me) this.flag('cover');
     } else if (ev.kind === 'challengeEnd') {
       const won = ev.role === 'challenger' ? ev.status === 'raidSuccessful' : ev.status === 'attackerDefeated';
       if (won) this.flag('won');

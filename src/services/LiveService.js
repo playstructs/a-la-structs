@@ -530,6 +530,9 @@ export class LiveService extends Service {
   }
 
   /** GRASS frames that should animate something. */
+  /** One of my structs, or one in the challenge I'm in. */
+  isOurs(id) { return !!id && (this.state.structs.has(id) || !!this.state.challenge?.structs?.has(id)); }
+
   onGrass(msg) {
     const ch = this.state.challenge;
     switch (msg.category) {
@@ -544,12 +547,17 @@ export class LiveService extends Service {
       }
       case 'struct_defense_add':
       case 'struct_defense_remove':
+        // The stream carries everyone's structs; only ours (or this challenge's) matter here.
+        if (!this.isOurs(msg.detail.defender_struct_id) && !this.isOurs(msg.detail.protected_struct_id)) break;
         this.fx({ kind: 'defense', defender: msg.detail.defender_struct_id, protected: msg.detail.protected_struct_id, on: msg.category === 'struct_defense_add' });
         break;
       case 'struct_move':
+        if (!this.isOurs(msg.detail.struct_id)) break;
         this.fx({ kind: 'move', structId: msg.detail.struct_id, ambit: normalizeAmbit(msg.detail.ambit) });
         break;
       case 'struct_status': {
+        // Somebody else's struct finishing onboarding isn't news here (it used to ring the hire jingle).
+        if (!this.isOurs(msg.detail.struct_id)) break;
         const was = Number(msg.detail.status_old), now = Number(msg.detail.status);
         if (!(was & STATUS.DESTROYED) && (now & STATUS.DESTROYED)) this.fx({ kind: 'destroyed', structId: msg.detail.struct_id, hostId: ch?.hostId });
         if (!(was & STATUS.BUILT) && (now & STATUS.BUILT)) this.fx({ kind: 'built', structId: msg.detail.struct_id });
