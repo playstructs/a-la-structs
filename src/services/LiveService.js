@@ -51,6 +51,7 @@ import { TASK } from '../../vendor/structs-webapp/js/constants/TaskConstants.js'
 import { TASK_TYPES } from '../../vendor/structs-webapp/js/constants/TaskTypes.js';
 import { PLAYER_TYPES } from '../../vendor/structs-webapp/js/constants/PlayerTypes.js';
 import { RAID_STATUS } from '../../vendor/structs-webapp/js/constants/RaidStatus.js';
+const RAID_ENDED = new Set([RAID_STATUS.ATTACKER_DEFEATED, RAID_STATUS.ATTACKER_RETREATED, RAID_STATUS.RAID_SUCCESSFUL, RAID_STATUS.DEMILITARIZED]);
 import { LOG_LEVEL } from '../../vendor/structs-webapp/js/constants/GrassConstants.js';
 import { TX_STATUS } from '../../vendor/structs-webapp/js/models/SigningTransaction.js';
 import { signInViaGuild, discoverHomeserver, matrixDeviceId } from './live/MatrixChat.js';
@@ -488,7 +489,9 @@ export class LiveService extends Service {
     }
     if (!role) {
       if (s.challenge && s.challenge.status === 'ongoing') {
-        const st = this.lastRaidStatus || 'attackerRetreated';
+        // How it ended: the chain's raid_status message, else the raid info's own final status.
+        const final = (s.challenge.role === 'challenger' ? enemy : me).planetRaidInfo?.status;
+        const st = [this.lastRaidStatus, final].find((x) => RAID_ENDED.has(x)) || 'attackerRetreated';
         s.challenge.status = st;
         const stolen = st === 'raidSuccessful' ? (this.lastSeized || 0) : 0;
         s.challenge.result = { status: st, stolen, text: this.resultText(st, s.challenge.role, stolen), tone: this.resultTone(st, s.challenge.role) };
@@ -522,7 +525,9 @@ export class LiveService extends Service {
       status: 'ongoing', log: prev?.log || [], result: null,
       hostHustle: host.getCharge?.(gs.currentBlockHeight) ?? 0,
     };
-    this.lastRaidStatus = info.status;
+    // Keep an ending the raid_status message already told us about: the raid
+    // info can still say "ongoing" for a refresh or two after the raid ends.
+    if (!prev || !RAID_ENDED.has(this.lastRaidStatus)) this.lastRaidStatus = info.status;
   }
 
   resultText(st, role, stolen = 0) {
@@ -853,6 +858,18 @@ export class LiveService extends Service {
   /* ── the office: owner card, keys, gold ───────────────────────────────── */
 
   myAddress() { return this.gs.signingAccount?.address || null; }
+
+  /**
+   * Whether this owner has won a challenge before — so the guide can tick off
+   * a win from before it was watching. Asks the group's raids-won count, which
+   * includes defences and wins with nothing to copy. A group server without
+   * that count falls back to recipes copied from rivals.
+   */
+  async hasWonBefore() {
+    const id = this.state.me.id;
+    try { return Number(await this.api.getSingleDataValue(`${this.api.apiUrl}/player/${id}/raid/won`, 'count')) > 0; } catch (e) { /* older group server */ }
+    try { return Number((await this.api.getPlayerOreStats(id, true))?.seized) > 0; } catch (e) { return false; }
+  }
 
   async getProfile(playerId = this.state.me.id) {
     const isMe = playerId === this.state.me.id;

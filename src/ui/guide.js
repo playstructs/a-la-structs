@@ -157,6 +157,11 @@ export class Guide {
     this.check(true);
     if (!this.greeted && !this.finished()) this.greet();
     else this.render();
+    // A challenge won before the guide was watching still counts.
+    if (!this.flags.won && this.app.svc.hasWonBefore) {
+      const el = this.el;
+      this.app.svc.hasWonBefore().then((won) => { if (won && this.el === el) this.flag('won'); });
+    }
   }
 
   greet() {
