@@ -20,8 +20,8 @@ export const GAMES = [
     load: () => import('./games/lineCook.js'),
   },
   {
-    key: 'fry-cook', type: 'Mobile Artillery', title: 'Fry Station', seconds: 75, unit: 'pieces', stars: [3, 7, 11],
-    how: 'Drag each piece through the wet batter, then the dry batter, and into the basket. Dunk the basket, lift it when it’s golden and tip it onto the plate. Dropped pieces cost a point.',
+    key: 'fry-cook', type: 'Mobile Artillery', title: 'Basket Toss', seconds: 75, unit: 'points', stars: [5, 14, 24],
+    how: 'Tap the wet batter, then the flour, then pull back and toss the piece into the basket drifting in the oil — a clean swish scores a bonus. When it’s golden, grab the basket and shake it to drain. Golden pieces score; drops cost a point.',
     load: () => import('./games/fryCook.js'),
   },
   { key: 'host', type: 'Stealth Bomber', title: 'Full House', seconds: 90, unit: 'guests', stars: [55, 110, 160],

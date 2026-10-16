@@ -1,448 +1,472 @@
 /**
- * Fry Cook — "Fry Station". A physics game: drag each piece from the tray
- * through the wet batter, then the dry batter, and into the basket. Drag the
- * basket into the oil, lift it out when the pieces are golden, and tip it
- * over the plate. Pieces you let go of over the floor (or fling off the
- * counter) are dropped and cost a point. Score = golden pieces plated.
+ * Fry Cook — "Basket Toss". Your critter holds a raw piece (chicken, onion
+ * ring, mozzarella stick, shrimp): tap the wet batter, then the flour, and it
+ * comes back battered. Pull back and let go to lob it into the wire basket
+ * drifting through the oil — rims and the splash guard bounce, a clean swish
+ * is a bonus, anything that misses is dropped. When the basket's golden, grab
+ * it and shake it to drain; it tips onto the pass and golden pieces score.
+ *
+ * Score: +1 per golden piece plated, +1 per swish, −1 per dropped piece.
+ * Side-on 3D in the restaurant's style; aim, meters and notes are the overlay.
  */
-import { pointer, C, box, circle, text, lerp, clamp, inRect, dist, pick, Pops } from '../kit.js';
+import { pointer, C, box, circle, text, lerp, ease, clamp, inRect, dist, pick, Pops } from '../kit.js';
 import { stage3d } from '../kit3d.js';
-import { model } from '../models.js';
+import { model, icon } from '../models.js';
 import * as THREE from 'three';
-import { toonMat, glowMat, Builder } from '../../three/toon.js';
+import { toonMat } from '../../three/toon.js';
 
 const KINDS = [
-  { kind: 'drumstick', name: 'chicken' }, { kind: 'onionRing', name: 'onion ring' }, { kind: 'mozzStick', name: 'mozzarella stick' }, { kind: 'shrimp', name: 'shrimp' },
+  { kind: 'drumstick', name: 'chicken' }, { kind: 'onionRing', name: 'onion ring' },
+  { kind: 'mozzStick', name: 'mozzarella stick' }, { kind: 'shrimp', name: 'shrimp' },
 ];
-const SCALE = 150;                // view units per metre
-const FOOD = 2.8;                 // pieces are drawn larger than life
-const GRAVITY = 1500;
-const DIP = 0.45;                 // seconds in a bowl to take the batter
-const GOLDEN = [4.2, 7.6];        // seconds in the oil for golden
-const BURNT = 10;
-const BASKET_HOLDS = 3;
-const R = 20;                     // piece radius
+const SCALE = 150;            // view units per metre
+const FOOD = 2.6;             // pieces are drawn larger than life
+const R = 15;                 // piece radius (view units)
+const GRAVITY = 1100;         // view units / s²
+const PULL = 6.2;             // launch speed per unit of pull
+const MAX_SPEED = 1080;
+const DIP = 0.32;             // seconds for a dunk
+const GOLDEN = [4.5, 8.5];    // seconds in the oil for golden
+const BURNT = 11;
+const HOLDS = 4;              // pieces per basket
+const DRAIN = 520;            // view units of side-to-side shaking to drain
 
 export default function create(ctx) {
   const s3 = stage3d(ctx.el, { scale: SCALE, quality: ctx.quality });
   const st = s3.ui, view = s3.view, g = s3.g;
+  const pops = new Pops();
   const world = new THREE.Group();
   s3.add(world);
-  let P = null;                   // the upright plane everything sits on
-  let cook = null;
-  const meshes = new Map();       // piece → mesh
-  let needBuild = true;
-  const pops = new Pops();
-  let pieces = [];
-  let held = null;                // { piece } | { basket: true }
-  let pointerAt = { x: 0, y: 0 };
-  let trayTimer = 0, sizzleTimer = 0, plateAway = 0;
-  let splats = [];
-  const L = {};
-  const basket = { x: 0, y: 0, inOil: false, tx: 0, ty: 0 };
 
-  /**
-   * Wide screens: one row — prep counter | gap | fry counter. Phones: the prep
-   * counter is a shelf across the top; below it the fry counter and the pass
-   * with the gap between them. Every station sits on a counter at `base`.
-   */
+  const L = {};
+  let needBuild = true;
+  let t = 0;                                  // seconds since the whistle
+  let hand = null;                            // { kind, coat: raw|wet|coated, dip: null|{ to, t }, pop }
+  const queue = [pick(KINDS), pick(KINDS)];
+  let flying = [];                            // { kind, x, y, vx, vy, touched, spin, rot }
+  let dropped = [];                           // { kind, x, t }
+  let served = [];                            // { kind, cook, t, from, slot }
+  let aim = null;                             // pointer while pulling back
+  let nextIn = 0;
+  const basket = { x: 0, phase: 0, lifted: false, lx: 0, ly: 0, drain: 0, pieces: [], splash: 0, dump: 0 };
+
+  /* ── layout (view units) ────────────────────────────────────────────── */
   function layout() {
     const { W, H } = view;
-    L.floorY = H - 6;
-    const gap = Math.max(50, Math.min(70, W * 0.1));
-    let prep, fry, pass;
-    if (view.portrait) {
-      const top = H * 0.4, low = H * 0.8;
-      prep = { x: 0, w: W, y: top, shelf: true };
-      fry = { x: 0, w: W * 0.58 - gap / 2, y: low };
-      pass = { x: W * 0.58 + gap / 2, w: W - (W * 0.58 + gap / 2), y: low };
-      L.gap = { x: fry.w, w: gap, y: low };
-    } else {
-      const y = H * 0.64;
-      prep = { x: 0, w: W * 0.5 - gap / 2, y };
-      fry = { x: W * 0.5 + gap / 2, w: (W - (W * 0.5 + gap / 2)) * 0.6, y };
-      pass = { x: fry.x + fry.w, w: W - fry.x - fry.w, y };
-      L.gap = { x: prep.w, w: gap, y };
-    }
-    L.counters = [prep, fry, pass];
-    const sw = prep.w / 3;
-    const bowl = (i) => ({ x: prep.x + sw * i + sw * 0.12, y: prep.y - 46, w: sw * 0.76, h: 46, base: prep.y });
-    L.tray = bowl(0); L.tray.y = prep.y - 22; L.tray.h = 22;
-    L.wet = bowl(1); L.dry = bowl(2);
-    L.fryer = { x: fry.x + fry.w * 0.12, y: fry.y - 64, w: fry.w * 0.76, h: 64, base: fry.y };
-    L.rack = { x: L.fryer.x + L.fryer.w * 0.1, y: L.fryer.y - 70, w: L.fryer.w * 0.8, h: 40 };
-    L.plate = { x: pass.x + pass.w * 0.12, y: pass.y - 18, w: pass.w * 0.76, h: 18, base: pass.y };
-    L.bw = Math.min(L.fryer.w * 0.9, 120); L.bh = 40;
-    L.hintY = Math.max(30, Math.min(prep.y, fry.y) - (view.portrait ? 120 : 150));
-    homeBasket(true);
-    reseat();
-    needBuild = true;   // the 3D set is rebuilt on the next frame
-  }
-  /** After a resize, put resting pieces back where they belong. */
-  function reseat() {
-    let t = 0;
-    for (const p of pieces) {
-      if (p.where === 'tray') { p.x = L.tray.x + L.tray.w * (0.28 + (t++ % 2) * 0.44); p.y = L.tray.base - R + 2; }
-      else if (p.where === 'wet' || p.where === 'dry') { const r = L[p.where]; p.x = r.x + r.w / 2; p.y = r.y + 18; }
-      else if (p.where === 'counter' || p.where === 'falling') { p.where = 'falling'; p.x = clamp(p.x, R, view.W - R); p.y = Math.min(p.y, L.hintY); p.py = p.y; p.vx = p.vy = 0; }
-      else if (p.where === 'served') { p.where = 'gone'; meshes.get(p)?.removeFromParent(); meshes.delete(p); }
-    }
-  }
-  function oilSpot() { return { x: L.fryer.x + L.fryer.w / 2, y: L.fryer.y + 26 }; }
-  function rackSpot() { return { x: L.fryer.x + L.fryer.w / 2, y: L.rack.y + 10 }; }
-  function homeBasket(snap = false) {
-    const s = basket.inOil ? oilSpot() : rackSpot();
-    basket.tx = s.x; basket.ty = s.y;
-    if (snap) { basket.x = s.x; basket.y = s.y; }
+    const P = view.portrait;
+    L.counterY = H * (P ? 0.8 : 0.72);
+    L.floorY = H - 4;
+    const bw = P ? 84 : 92;
+    L.wet = { x: 18, y: L.counterY - 44, w: bw, h: 44 };
+    L.dry = { x: 18 + bw + 12, y: L.counterY - 44, w: bw, h: 44 };
+    // wide screens: the cook stands in the open between the flour and the fryer; phones: above the bowls
+    L.hand = P ? { x: L.wet.x + bw + 6, y: L.counterY - 190 } : { x: L.dry.x + bw + 70, y: L.counterY - 140 };
+    const fx = Math.max(L.dry.x + bw + (P ? 22 : 150), W * (P ? 0.55 : 0.5));
+    const room = W - fx - (P ? 18 : 140);
+    L.fryer = { x: fx, w: Math.min(P ? 999 : 300, Math.max(150, room)), oilY: L.counterY - 22 };
+    L.fryer.r = L.fryer.x + L.fryer.w;
+    L.guard = { x: L.fryer.r + 4, top: L.fryer.oilY - 130 };
+    L.bw = Math.min(104, L.fryer.w * 0.55); L.bh = 40;
+    L.rimY = L.fryer.oilY - 16;
+    // the pass: on the counter right of the fryer if there's room, else on a shelf above it
+    if (W - L.guard.x > 120) L.plate = { x: L.guard.x + 26, y: L.counterY - 10, w: Math.min(110, W - L.guard.x - 40), shelf: false };
+    else L.plate = { x: L.fryer.x + L.fryer.w * 0.25, y: L.guard.top - 70, w: L.fryer.w * 0.5, shelf: true };
+    L.hintY = Math.max(36, L.hand.y - 110);
+    needBuild = true;
   }
   layout();
   view.onResize = layout;
 
-  /* pieces */
-  function spawn() {
-    const inTray = pieces.filter((p) => p.where === 'tray').length;
-    if (inTray >= 2) return;
-    const k = pick(KINDS);
-    const slot = pieces.some((p) => p.where === 'tray' && p.x < L.tray.x + L.tray.w / 2) ? 1 : 0;
-    pieces.push({ ...k, id: Math.random(), x: L.tray.x + L.tray.w * (0.28 + slot * 0.44), y: L.tray.base - R + 2, vx: 0, vy: 0, where: 'tray', coat: 'raw', dip: 0, cook: 0, born: 0 });
+  /* ── the basket's drift through the oil ─────────────────────────────── */
+  const driftSpan = () => ((L.fryer.w - L.bw) / 2 - 6) * lerp(0.25, 1, clamp(t / ctx.seconds, 0, 1));
+  function basketHome() { return L.fryer.x + L.fryer.w / 2 + Math.sin(basket.phase) * driftSpan(); }
+  /** Where the basket's opening is right now. */
+  function rim() {
+    if (basket.lifted) return { x: basket.lx, y: basket.ly - L.bh / 2 };
+    return { x: basket.x, y: L.rimY - (basket.dump > 0 ? 60 * Math.sin(Math.PI * basket.dump) : 0) };
   }
 
-  function restOn(p, where, y) { p.where = where; p.y = y; p.vx = 0; p.vy = 0; p.dip = 0; }
+  /* ── prep: dunk, dredge ─────────────────────────────────────────────── */
+  function newPiece() { const k = queue.shift(); queue.push(pick(KINDS)); hand = { ...k, coat: 'raw', dip: null, pop: 0 }; }
+  function dunk(where) {
+    if (ctx.over || !hand || hand.dip) return;
+    if (where === 'dry' && hand.coat === 'raw') { pops.add('Wet batter first!', L.dry.x + L.dry.w / 2, L.dry.y - 40, C.berryD, 15); ctx.sfx.miss(); return; }
+    if (where === 'wet' && hand.coat !== 'raw') { pops.add(hand.coat === 'wet' ? 'Now the flour' : 'Ready — toss it!', L.wet.x + L.wet.w / 2, L.wet.y - 40, C.muted, 15); return; }
+    if (where === 'dry' && hand.coat === 'coated') return;
+    hand.dip = { to: where, t: 0 };
+    cook?.play('fry', DIP);
+    ctx.sfx.work(where === 'wet' ? 'slosh' : 'wipe', { dur: 0.3, vol: 0.6 });
+  }
 
-  function land(p) {
-    const at = { x: p.x, y: p.y };
-    // into a bowl
-    for (const [key, r] of [['wet', L.wet], ['dry', L.dry]]) {
-      if (at.x > r.x - 4 && at.x < r.x + r.w + 4 && at.y > r.y - R) {
-        restOn(p, key, r.y + 18);
-        ctx.sfx.work('slosh', { dur: 0.3, vol: 0.5 });
-        if (key === 'dry' && p.coat === 'raw') pops.add('Wet batter first!', r.x + r.w / 2, r.y - 30, C.berryD, 15);
-        if (key === 'wet' && p.coat === 'coated') { p.coat = 'raw'; pops.add('Washed off!', r.x + r.w / 2, r.y - 30, C.berryD, 15); }
-        return true;
+  /* ── toss ───────────────────────────────────────────────────────────── */
+  const ready = () => !!hand && hand.coat === 'coated' && !hand.dip;
+  function launchVelocity(p) {
+    let vx = (L.hand.x - p.x) * PULL, vy = (L.hand.y - p.y) * PULL;
+    const s = Math.hypot(vx, vy);
+    if (s > MAX_SPEED) { vx *= MAX_SPEED / s; vy *= MAX_SPEED / s; }
+    return { vx, vy };
+  }
+  function toss(v) {
+    flying.push({ kind: hand.kind, x: L.hand.x, y: L.hand.y, vx: v.vx, vy: v.vy, touched: false, spin: (Math.random() - 0.5) * 14, rot: 0 });
+    hand = null;
+    nextIn = 0.28;
+    cook?.hop(0.4);
+    ctx.sfx.work('whoosh', { dur: 0.4, vol: 0.5 });
+  }
+
+  function dropPiece(f, why) {
+    dropped.push({ kind: f.kind, x: clamp(f.x, 12, view.W - 12), t: 0 });
+    ctx.add(-1);
+    ctx.sfx.miss();
+    cook?.wobble(0.8);
+    pops.add(`${why} −1`, clamp(f.x, 80, view.W - 80), Math.min(f.y, L.counterY) - 34, C.berryD, 16);
+  }
+
+  /** One flight step: gravity, the basket (rims, sides, opening), the guard, oil, counter, floor. */
+  function fly(f, dt) {
+    const py = f.y;
+    f.vy += GRAVITY * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.rot += f.spin * dt;
+    const o = rim(), half = L.bw / 2;
+    // rims: two posts at the basket's top corners
+    for (const side of [-1, 1]) {
+      const rx = o.x + side * half, ry = o.y, dx = f.x - rx, dy = f.y - ry, d = Math.hypot(dx, dy);
+      if (d < R + 4 && d > 0) {
+        const nx = dx / d, ny = dy / d, dot = f.vx * nx + f.vy * ny;
+        if (dot < 0) { f.vx -= 1.55 * dot * nx; f.vy -= 1.55 * dot * ny; f.vx *= 0.85; f.vy *= 0.85; }
+        f.x = rx + nx * (R + 4); f.y = ry + ny * (R + 4);
+        if (!f.touched) ctx.sfx.work('clank', { vol: 0.6 });
+        f.touched = true;
       }
     }
-    // into the basket
-    const b = basketRect();
-    if (at.x > b.x - 12 && at.x < b.x + b.w + 12 && at.y > b.y - 14 && at.y < b.y + b.h) {
-      if (p.coat !== 'coated') {
-        pops.add(p.coat === 'raw' ? 'Batter it first!' : 'Needs dry batter!', basket.x, b.y - 30, C.berryD, 15);
-        p.vy = -420; p.vx = (Math.random() - 0.5) * 260; p.y = b.y - 12;
-        ctx.sfx.miss();
+    // in through the opening
+    if (py < o.y && f.y >= o.y && Math.abs(f.x - o.x) < half - 3 && f.vy > 0) {
+      if (basket.pieces.length >= HOLDS) {
+        f.vy = -Math.abs(f.vy) * 0.5; f.vx += (f.x < o.x ? -1 : 1) * 120; f.y = o.y - 1; f.touched = true;
+        pops.add('Basket’s full!', o.x, o.y - 50, C.berryD, 15);
         return false;
       }
-      if (basketPieces().length >= BASKET_HOLDS) { pops.add('Basket’s full!', basket.x, b.y - 30, C.berryD, 15); p.vy = -380; p.vx = 160; p.y = b.y - 12; return false; }
-      p.where = 'basket'; p.vx = p.vy = 0;
-      ctx.sfx.work('thud', { vol: 0.5 });
-      if (basket.inOil) ctx.sfx.work('sizzle', { dur: 0.8, vol: 0.5 });
+      basket.pieces.push({ kind: f.kind, cook: 0, slot: Math.random() });
+      basket.splash = 0.35;
+      ctx.sfx.work('sizzle', { dur: 0.9, vol: 0.6 });
+      if (!f.touched) { ctx.add(1); ctx.sfx.good(2); pops.add('Swish! +1', o.x, o.y - 56, C.leafD, 18); cook?.play('cheer', 0.9); }
+      else pops.add('In!', o.x, o.y - 50, C.leafD, 16);
       return true;
     }
-    // on a counter (only from above: a piece let go under the shelf falls past it)
-    const c = L.counters.find((k) => at.x > k.x && at.x < k.x + k.w && at.y >= k.y - R && p.py < k.y - R + 1);
-    if (c) {
-      if (at.x > L.fryer.x && at.x < L.fryer.x + L.fryer.w && c.y === L.fryer.base) {
-        // straight into the oil with no basket: ruined
-        drop(p, 'Splash! Use the basket.'); return true;
-      }
-      restOn(p, 'counter', c.y - R);
-      ctx.sfx.work('thud', { vol: 0.35 });
-      return true;
+    // the basket's sides
+    if (f.y > o.y && f.y < o.y + L.bh + R && Math.abs(f.x - o.x) < half + R && Math.abs(f.x - o.x) > half - 3) {
+      const side = Math.sign(f.x - o.x) || 1;
+      f.x = o.x + side * (half + R); f.vx = side * Math.abs(f.vx) * 0.5 + side * 40; f.touched = true;
     }
-    if (at.y >= L.floorY - R || at.x < -R || at.x > view.W + R) { drop(p, 'Dropped!'); return true; }
+    // the splash guard on the fryer's far side
+    if (f.x + R > L.guard.x && f.x - R < L.guard.x + 8 && f.y > L.guard.top && f.y < L.fryer.oilY && f.vx > 0) {
+      f.x = L.guard.x - R; f.vx = -f.vx * 0.55; f.touched = true;
+      ctx.sfx.work('clank', { vol: 0.5 });
+    }
+    // oil outside the basket, the counter, the floor, off screen
+    if (f.y >= L.fryer.oilY && f.x > L.fryer.x && f.x < L.fryer.r) { dropPiece(f, 'Splash! Missed the basket'); return true; }
+    if (f.y >= L.counterY - R && f.vy > 0) { dropPiece(f, 'Dropped!'); return true; }
+    if (f.x < -40 || f.x > view.W + 40 || f.y > view.H + 40) { dropPiece(f, 'Dropped!'); return true; }
     return false;
   }
 
-  function drop(p, why) {
-    p.where = 'gone';
-    splats.push({ x: clamp(p.x, 10, view.W - 10), y: Math.min(p.y, L.floorY - 8), kind: p.kind, coat: p.coat, cook: p.cook, t: 0 });
-    ctx.add(-1);
-    ctx.sfx.miss();
-    pops.add(`${why} −1`, clamp(p.x, 60, view.W - 60), Math.min(p.y, L.floorY) - 40, C.berryD);
+  /* ── lift, shake, tip out ───────────────────────────────────────────── */
+  function grab(p) {
+    const o = rim();
+    if (basket.dump > 0) return false;
+    if (!inRect(p, { x: o.x - L.bw / 2 - 26, y: o.y - 50, w: L.bw + 52, h: L.bh + 90 })) return false;
+    basket.lifted = true; basket.lx = o.x; basket.ly = L.rimY - 40; basket.drain = 0; basket.px = p.x;
+    ctx.sfx.work('slosh', { dur: 0.4, vol: 0.6 });
+    cook?.loop('shake');
+    return true;
   }
-
-  /* basket */
-  function basketRect() { return { x: basket.x - L.bw / 2, y: basket.y - L.bh / 2, w: L.bw, h: L.bh }; }
-  function basketPieces() { return pieces.filter((p) => p.where === 'basket'); }
-
-  function releaseBasket() {
-    const p = pointerAt;
-    if (inRect(p, { x: L.fryer.x - 20, y: L.fryer.y - 70, w: L.fryer.w + 40, h: L.fryer.h + 80 })) {
-      if (!basket.inOil) { basket.inOil = true; ctx.sfx.work('sizzle', { dur: 1.2, vol: 0.7 }); }
-    } else if (inRect(p, { x: L.plate.x - 30, y: L.plate.y - 120, w: L.plate.w + 60, h: 150 })) {
-      basket.inOil = false;
-      tipOut();
-    } else basket.inOil = false;
-    homeBasket();
+  function shake(p) {
+    // Shaking counts the hand's travel, so it works however narrow the fryer is.
+    if (basket.pieces.length) basket.drain += Math.min(60, Math.abs(p.x - basket.px)) / DRAIN;
+    basket.px = p.x;
+    basket.lx = clamp(p.x, L.fryer.x - 20 + L.bw / 2, L.guard.x - L.bw / 2);
+    basket.ly = clamp(p.y, L.guard.top + 10, L.rimY - 30);
+    if (basket.drain >= 1) tipOut();
   }
-
+  function letGo() {
+    basket.lifted = false;
+    basket.x = clamp(basket.lx, L.fryer.x + L.bw / 2, L.fryer.r - L.bw / 2);
+    basket.phase = Math.asin(clamp((basket.x - (L.fryer.x + L.fryer.w / 2)) / Math.max(1, driftSpan()), -1, 1));
+    cook?.loop(null);
+    ctx.sfx.work('sizzle', { dur: 0.6, vol: 0.4 });
+  }
   function tipOut() {
-    const list = basketPieces();
-    if (!list.length) return;
-    let good = 0;
-    for (const p of list) {
-      p.where = 'served'; p.x = L.plate.x + L.plate.w / 2 + (Math.random() - 0.5) * L.plate.w * 0.5; p.y = L.plate.y - 10;
-      if (p.cook >= GOLDEN[0] && p.cook <= GOLDEN[1]) good++;
+    let good = 0, raw = 0, burnt = 0;
+    for (const pc of basket.pieces) {
+      if (pc.cook < GOLDEN[0]) raw++; else if (pc.cook > GOLDEN[1]) burnt++; else good++;
+      served.push({ kind: pc.kind, cook: pc.cook, t: 0, from: { x: basket.lx, y: basket.ly }, slot: served.length % 5 });
     }
-    const raw = list.filter((p) => p.cook < GOLDEN[0]).length, burnt = list.filter((p) => p.cook > GOLDEN[1]).length;
-    if (good) { ctx.add(good); ctx.sfx.good(good); ctx.sfx.serve(); pops.add(`Golden! +${good}`, L.plate.x + L.plate.w / 2, L.plate.y - 50, C.leafD); }
-    if (raw) pops.add(raw > 1 ? `${raw} undercooked` : 'Undercooked', L.plate.x + L.plate.w / 2, L.plate.y - (good ? 78 : 50), C.berryD, 16);
-    if (burnt) pops.add(burnt > 1 ? `${burnt} overdone` : 'Overdone', L.plate.x + L.plate.w / 2, L.plate.y - (good || raw ? 104 : 50), C.berryD, 16);
+    basket.pieces = [];
+    basket.lifted = false; basket.dump = 0.001; basket.drain = 0;
+    basket.x = clamp(basket.lx, L.fryer.x + L.bw / 2, L.fryer.r - L.bw / 2);
+    basket.phase = Math.asin(clamp((basket.x - (L.fryer.x + L.fryer.w / 2)) / Math.max(1, driftSpan()), -1, 1));
+    cook?.loop(null);
+    const px = L.plate.x + L.plate.w / 2, py = L.plate.y - 30;
+    if (good) { ctx.add(good); ctx.sfx.good(good + 1); ctx.sfx.serve(); pops.add(`Golden! +${good}`, px, py - 10, C.leafD, 18); cook?.play('cheer', 1); }
+    if (raw) pops.add(raw > 1 ? `${raw} undercooked` : 'Undercooked', px, py + 14, C.berryD, 15);
+    if (burnt) pops.add(burnt > 1 ? `${burnt} burnt` : 'Burnt', px, py + 36, C.berryD, 15);
     if (!good) ctx.sfx.miss();
-    plateAway = 0.9;
   }
 
-  /* input */
+  /* ── input ──────────────────────────────────────────────────────────── */
+  let mode = null;
   const offPointer = pointer(st, {
     down: (p) => {
       if (ctx.over) return;
-      pointerAt = p;
-      const free = pieces.filter((x) => ['tray', 'wet', 'dry', 'counter', 'falling'].includes(x.where));
-      let best = null, bd = R * 1.7;
-      for (const x of free) { const d = dist(p, x); if (d < bd) { bd = d; best = x; } }
-      if (best) { held = { piece: best, lastX: p.x, lastY: p.y }; best.where = 'held'; ctx.sfx.pop(); return; }
-      const b = basketRect();
-      if (inRect(p, { x: b.x - 14, y: b.y - 30, w: b.w + 28, h: b.h + 40 })) {
-        held = { basket: true, dx: basket.x - p.x, dy: basket.y - p.y };
-        if (basket.inOil) ctx.sfx.work('slosh', { dur: 0.4, vol: 0.6 });
-        basket.inOil = false;
-      }
+      if (inRect(p, { x: L.wet.x - 6, y: L.wet.y - 40, w: L.wet.w + 12, h: L.wet.h + 70 })) { dunk('wet'); return; }
+      if (inRect(p, { x: L.dry.x - 6, y: L.dry.y - 40, w: L.dry.w + 12, h: L.dry.h + 70 })) { dunk('dry'); return; }
+      if (grab(p)) { mode = 'basket'; return; }
+      if (ready() && dist(p, L.hand) < 90) { mode = 'aim'; aim = { x: p.x, y: p.y }; return; }
+      if (hand && hand.coat !== 'coated' && !hand.dip) pops.add(hand.coat === 'raw' ? 'Tap the wet batter' : 'Now the flour', L.hand.x, L.hand.y - 40, C.muted, 14);
     },
-    move: (p) => { pointerAt = p; },
+    move: (p) => {
+      if (mode === 'aim') aim = { x: p.x, y: p.y };
+      else if (mode === 'basket' && basket.lifted) shake(p);
+    },
     up: (p) => {
-      pointerAt = p;
-      if (!held) return;
-      // A gentle let-go mostly drops; a real flick still throws.
-      if (held.piece) { const x = held.piece; x.where = 'falling'; x.py = x.y; x.vx = clamp(x.vx * 0.55, -800, 800); x.vy = clamp(x.vy * 0.55, -800, 800); }
-      else if (held.basket) releaseBasket();
-      held = null;
+      if (mode === 'aim') {
+        aim = null;
+        if (ready() && dist(p, L.hand) > 22) toss(launchVelocity(p));
+      } else if (mode === 'basket' && basket.lifted) letGo();
+      mode = null;
     },
   });
+  const onKey = (e) => {
+    if (e.key === '1') { e.preventDefault(); dunk('wet'); }
+    if (e.key === '2') { e.preventDefault(); dunk('dry'); }
+  };
+  window.addEventListener('keydown', onKey);
 
-  /* update */
+  /* ── update ─────────────────────────────────────────────────────────── */
   function step(dt) {
-    trayTimer -= dt;
-    if (trayTimer <= 0) { spawn(); trayTimer = 1.1; }
-    if (plateAway > 0) plateAway = Math.max(0, plateAway - dt);
-    if (plateAway === 0) pieces = pieces.filter((p) => p.where !== 'served');
-
-    if (held?.piece) {
-      const x = held.piece;
-      const nx = lerp(x.x, pointerAt.x, clamp(dt * 22, 0, 1)), ny = lerp(x.y, pointerAt.y - 6, clamp(dt * 22, 0, 1));
-      if (dt > 0) { x.vx = (nx - x.x) / dt; x.vy = (ny - x.y) / dt; }
-      x.x = nx; x.y = ny;
-    }
-    if (held?.basket) {
-      basket.x = lerp(basket.x, pointerAt.x + held.dx, clamp(dt * 20, 0, 1));
-      basket.y = lerp(basket.y, Math.min(pointerAt.y + held.dy, L.fryer.base - L.bh / 2), clamp(dt * 20, 0, 1));
-    } else {
-      basket.x = lerp(basket.x, basket.tx, clamp(dt * 12, 0, 1));
-      basket.y = lerp(basket.y, basket.ty, clamp(dt * 12, 0, 1));
-    }
-
-    for (const p of pieces) {
-      if (p.where === 'falling') {
-        p.py = p.y; p.vy += GRAVITY * dt; p.x += p.vx * dt; p.y += p.vy * dt;
-        if (p.vy > 0) land(p);
-      } else if (p.where === 'wet' || p.where === 'dry') {
-        p.dip += dt;
-        if (p.dip >= DIP) {
-          if (p.where === 'wet' && p.coat === 'raw') { p.coat = 'wet'; ctx.sfx.work('slosh', { dur: 0.25, vol: 0.35 }); }
-          if (p.where === 'dry' && p.coat === 'wet') { p.coat = 'coated'; ctx.sfx.work('wipe', { dur: 0.3, vol: 0.5 }); }
-        }
-      } else if (p.where === 'basket') {
-        const list = basketPieces(), i = list.indexOf(p);
-        p.x = basket.x + (i - (list.length - 1) / 2) * (L.bw / 3.4);
-        p.y = basket.y - 4 + (basket.inOil ? Math.sin(performance.now() / 120 + i) * 1.5 : 0);
-        if (basket.inOil) p.cook += dt;
+    t += dt;
+    if (!hand) { nextIn -= dt; if (nextIn <= 0) newPiece(); }
+    if (hand) {
+      hand.pop = Math.min(1, hand.pop + dt * 5);
+      if (hand.dip) {
+        hand.dip.t += dt;
+        if (hand.dip.t >= DIP) { hand.coat = hand.dip.to === 'wet' ? 'wet' : 'coated'; hand.dip = null; if (hand.coat === 'coated') ctx.sfx.pop(); }
       }
     }
-    pieces = pieces.filter((p) => p.where !== 'gone');
-    if (basket.inOil && basketPieces().length) {
-      sizzleTimer -= dt;
-      if (sizzleTimer <= 0) { ctx.sfx.work('sizzle', { dur: 1.1, vol: 0.35 }); sizzleTimer = 1.1; }
-    }
-    for (const s of splats) s.t += dt;
-    splats = splats.filter((s) => s.t < 2.5);
+    if (!basket.lifted && basket.dump === 0) { basket.phase += dt * lerp(0.55, 1.5, clamp(t / ctx.seconds, 0, 1)); basket.x = basketHome(); }
+    if (basket.dump > 0) { basket.dump += dt / 0.6; if (basket.dump >= 1) basket.dump = 0; }
+    basket.splash = Math.max(0, basket.splash - dt);
+    if (!basket.lifted) for (const pc of basket.pieces) pc.cook += dt;
+    flying = flying.filter((f) => !fly(f, dt));
+    for (const d of dropped) d.t += dt;
+    dropped = dropped.filter((d) => d.t < 2.2);
+    for (const s of served) s.t += dt;
+    served = served.filter((s) => s.t < 1.6);
     pops.update(dt);
   }
 
   /* ── 3D ─────────────────────────────────────────────────────────────── */
+  let P = null, cook = null, basketMesh = null, oil = null, plateMesh = null;
+  const bowls = {};
+  const handMap = new Map(), flyMeshes = new Map(), inMeshes = new Map(), dropMeshes = new Map(), servedMeshes = new Map();
+  const depthFree = () => R / (s3.sinE * SCALE);   // free pieces sit just in front of the counter's edge
 
   function box3(w, h, d, color) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), toonMat({ color }));
     m.userData.ownGeometry = true; m.castShadow = m.receiveShadow = true;
     return m;
   }
-  let basketMesh = null, oil = null, fryerBody = null, plateMesh = null, bowls = {};
 
-  /** Kitchen set built from the layout: counters, bowls, fryer, plate, the cook. */
   function build() {
     world.clear();
-    meshes.clear();
-    splatMeshes.clear();
-    const { W, H } = view;
-    const lowest = Math.max(...L.counters.map((c) => c.y));
-    P = s3.plane(lowest + 0.9 * s3.cosE * SCALE);
+    for (const m of [handMap, flyMeshes, inMeshes, dropMeshes, servedMeshes]) m.clear();
+    const { W } = view;
+    P = s3.plane(L.counterY + 0.78 * s3.cosE * SCALE);   // a low counter, so the cook shows over it
     world.add(s3.floor('checker', { size: 0.45 }));
-    world.add(s3.wall({ y: P.footY - 1.5 * s3.sinE * SCALE }));
-    const DEEP = 0.7;
-    for (const c of L.counters) {
-      const hgt = P.height(c.y), cx = (c.x + c.w / 2) / SCALE;
-      if (c.shelf) {
-        const plank = box3(c.w / SCALE + 0.1, 0.06, 0.42, '#c9d3da'); plank.position.set(cx, hgt - 0.03, P.z - 0.21); world.add(plank);
-        for (const bx of [c.x + 34, c.x + c.w - 34]) { const br = box3(0.05, 0.3, 0.3, '#9aa7b1'); br.position.set(bx / SCALE, hgt - 0.2, P.z - 0.25); world.add(br); }
-        continue;
-      }
-      const body = box3(c.w / SCALE, hgt, DEEP, '#c98f5a'); body.position.set(cx, hgt / 2, P.z - DEEP / 2); world.add(body);
-      const top = box3(c.w / SCALE + 0.03, 0.05, DEEP + 0.04, '#c9d3da'); top.position.set(cx, hgt, P.z - DEEP / 2); world.add(top);
-      // cupboard doors on the front
-      const doors = Math.max(1, Math.round(c.w / 90)), dw = c.w / doors;
-      for (let d = 0; d < doors; d++) {
-        const door = box3(dw / SCALE - 0.06, Math.max(0.2, hgt - 0.24), 0.02, '#e4b583');
-        door.position.set((c.x + d * dw + dw / 2) / SCALE, hgt / 2 - 0.02, P.z + 0.01); world.add(door);
-        const knob = box3(0.03, 0.12, 0.03, '#e8505b'); knob.position.set((c.x + d * dw + (d % 2 ? 14 : dw - 14)) / SCALE, hgt * 0.62, P.z + 0.03); world.add(knob);
-      }
+    world.add(s3.wall({ y: P.footY - 1.6 * s3.sinE * SCALE }));
+    // one long counter with cupboards
+    const hgt = P.height(L.counterY), DEEP = 0.7;
+    const body = box3(W / SCALE + 1, hgt, DEEP, '#c98f5a'); body.position.set(W / SCALE / 2, hgt / 2, P.z - DEEP / 2); world.add(body);
+    const top = box3(W / SCALE + 1.04, 0.05, DEEP + 0.04, '#e4b583'); top.position.set(W / SCALE / 2, hgt, P.z - DEEP / 2); world.add(top);
+    const doors = Math.max(2, Math.round(W / 110)), dw = W / doors;
+    for (let d = 0; d < doors; d++) {
+      const door = box3(dw / SCALE - 0.06, hgt - 0.22, 0.02, '#e4b583');
+      door.position.set((d * dw + dw / 2) / SCALE, hgt / 2 - 0.03, P.z + 0.01); world.add(door);
+      const knob = box3(0.03, 0.12, 0.03, '#e8505b'); knob.position.set((d * dw + (d % 2 ? 14 : dw - 14)) / SCALE, hgt * 0.62, P.z + 0.03); world.add(knob);
     }
-    // raw tray
-    const tray = box3(L.tray.w / SCALE, 0.04, 0.3, '#7d8a96'); tray.position.copy(P.at(L.tray.x + L.tray.w / 2, L.tray.base, 0.15)); tray.position.y = P.height(L.tray.base) + 0.02; world.add(tray);
-    // batter bowls: centred a little behind the counter's front edge
+    // batter bowls
     for (const [key, fill] of [['wet', '#f5e6b8'], ['dry', '#fbf7ee']]) {
       const r = L[key], k = (r.w / SCALE) / 0.48, m = model('bigBowl', { fill });
       m.scale.setScalar(k);
-      m.position.copy(P.at(r.x + r.w / 2, r.base, 0.26 * k)); m.position.y = P.height(r.base);
-      bowls[key] = { mesh: m, back: 0.26 * k, k };
+      m.position.set((r.x + r.w / 2) / SCALE, hgt, P.z - 0.26 * k);
+      bowls[key] = { mesh: m, k };
       world.add(m);
     }
-    // the fryer: a steel cabinet on the fry counter with a vat of oil on top
-    const f = L.fryer, fw = f.w / SCALE, fh = P.height(f.y) - P.height(f.base), fd = 0.55;
-    fryerBody = box3(fw, fh, fd, '#8e9ba8'); fryerBody.position.copy(P.at(f.x + f.w / 2, f.base, fd / 2)); fryerBody.position.y = P.height(f.base) + fh / 2; world.add(fryerBody);
-    oil = new THREE.Mesh(new THREE.BoxGeometry(fw - 0.06, 0.02, fd - 0.08), toonMat({ color: '#e0a83a' }));
+    // the fryer: a steel vat set into the counter, the oil a little below the top, a splash guard on the far side
+    const f = L.fryer, fw = f.w / SCALE, fd = 0.5;
+    const vat = box3(fw + 0.08, 0.14, fd + 0.08, '#8e9ba8'); vat.position.set((f.x + f.w / 2) / SCALE, hgt + 0.03, P.z - fd / 2 - 0.06); world.add(vat);
+    oil = new THREE.Mesh(new THREE.BoxGeometry(fw - 0.02, 0.02, fd - 0.02), toonMat({ color: '#e9a23b' }));
     oil.userData.ownGeometry = true;
-    oil.position.copy(fryerBody.position); oil.position.y = P.height(f.base) + fh + 0.005; world.add(oil);
-    const panel = box3(fw * 0.4, fh * 0.25, 0.02, '#2b2d42'); panel.position.copy(fryerBody.position); panel.position.z += fd / 2 + 0.01; panel.position.y -= fh * 0.15; world.add(panel);
-    // the hook the basket hangs on
-    const hook = box3(0.03, P.height(L.rack.y) - P.height(f.y) + 0.1, 0.03, '#9aa7b1');
-    hook.position.copy(P.at(f.x + f.w / 2, (L.rack.y + f.y) / 2, 0.3)); world.add(hook);
-    // plate on the pass
+    oil.position.set((f.x + f.w / 2) / SCALE, hgt + 0.1, P.z - fd / 2 - 0.06);
+    world.add(oil);
+    const gtop = P.height(L.guard.top);
+    const guard = box3(0.05, gtop - hgt, fd + 0.08, '#c9d3da'); guard.position.set((L.guard.x + 4) / SCALE, (gtop + hgt) / 2, P.z - fd / 2 - 0.06); world.add(guard);
+    // the pass plate
     plateMesh = model('plate'); plateMesh.scale.setScalar((L.plate.w / SCALE) / 0.26);
-    plateMesh.position.copy(P.at(L.plate.x + L.plate.w / 2, L.plate.base, 0.2)); plateMesh.position.y = P.height(L.plate.base);
+    if (L.plate.shelf) {
+      const sh = box3(L.plate.w / SCALE + 0.3, 0.05, 0.4, '#c9d3da'); sh.position.copy(P.at(L.plate.x + L.plate.w / 2, L.plate.y + 6, 0.2)); world.add(sh);
+      plateMesh.position.copy(sh.position); plateMesh.position.y += 0.03;
+    } else plateMesh.position.set((L.plate.x + L.plate.w / 2) / SCALE, hgt + 0.02, P.z - 0.25);
     world.add(plateMesh);
-    // the basket
     basketMesh = model('wireBasket'); basketMesh.scale.setScalar((L.bw / SCALE) / 0.34);
     world.add(basketMesh);
-    // the fry cook behind the pass, in the uniform their role wears
+    // the fry cook behind the bowls, holding out the next piece
     if (cook) s3.dropCritter(cook);
-    cook = s3.critter({ ...ctx.critter, scale: view.portrait ? 0.95 : 1.05 });
-    // in the gap between the counters, watching for drops
-    const spot = P.at(L.gap.x + L.gap.w / 2, L.gap.y, 0.9); cook.setPosition(spot.x, 0, spot.z);
-    cook.object.rotation.y = 0; cook.targetHeading = 0;
+    cook = s3.critter({ ...ctx.critter, scale: 1.15 });
+    // clear of the counter's back edge (the counter is DEEP, a critter ~0.35 m round)
+    const spot = P.at(L.hand.x - (view.portrait ? 30 : 48), L.counterY, DEEP + 0.4); cook.setPosition(spot.x, 0, spot.z);
+    cook.object.rotation.y = 0.45; cook.targetHeading = 0.45;
   }
 
-  /** Dropped pieces lie on the floor for a moment. */
-  const splatMeshes = new Map();
-  function syncSplats() {
-    for (const sp of splats) {
-      if (splatMeshes.has(sp)) continue;
-      const [kind, opts] = pieceLook(sp), m = model(kind, opts);
-      m.scale.setScalar(FOOD); m.rotation.set(0, Math.random() * 6, 1.3);
-      m.position.copy(s3.at(sp.x, L.floorY - 14, 0));
-      splatMeshes.set(sp, m); world.add(m);
-    }
-    for (const [sp, m] of splatMeshes) if (!splats.includes(sp)) { m.removeFromParent(); splatMeshes.delete(sp); }
-  }
-
-  /** Batter colour from pale through golden to burnt, in a few steps so meshes can be shared. */
-  function coatColor(p) {
-    if (p.cook <= 0) return '#f4ead2';
-    const c = Math.round(p.cook * 2) / 2;
+  /** Batter colour by time in the oil, in steps so meshes are shared. */
+  function coatColor(cookT) {
+    const c = Math.round(cookT * 2) / 2;
+    if (c <= 0) return '#f4ead2';
     if (c < GOLDEN[0]) return mix('#f4ead2', '#f2c14e', c / GOLDEN[0]);
     if (c <= GOLDEN[1]) return mix('#f2c14e', '#d98a2b', (c - GOLDEN[0]) / (GOLDEN[1] - GOLDEN[0]));
     return mix('#d98a2b', '#3b2416', clamp((c - GOLDEN[1]) / (BURNT - GOLDEN[1]), 0, 1));
   }
-  function pieceLook(p) {
-    if (p.coat === 'coated') return ['batter', { coat: coatColor(p) }];
-    if (p.coat === 'wet') return [p.kind, { coat: '#f5e6b8' }];
-    return [p.kind, {}];
+  function look(kind, coat, cookT = 0) {
+    if (coat === 'coated') return ['batter', { coat: coatColor(cookT) }];
+    if (coat === 'wet') return [kind, { coat: '#f5e6b8' }];
+    return [kind, {}];
   }
-  function syncPiece(p) {
-    const [kind, opts] = pieceLook(p), sig = kind + JSON.stringify(opts);
-    let m = meshes.get(p);
+  /** The mesh for `key` in `map`, swapped only when its look changes. */
+  function meshFor(map, key, [kind, opts]) {
+    const sig = kind + JSON.stringify(opts);
+    let m = map.get(key);
     if (!m || m.userData.sig !== sig) {
-      const old = m;
-      m = model(kind, opts); m.scale.setScalar(FOOD); m.userData.sig = sig; m.rotation.y = (p.id || 0) * 6;
-      if (old) { m.position.copy(old.position); old.removeFromParent(); }
-      meshes.set(p, m); world.add(m);
+      m?.removeFromParent();
+      m = model(kind, opts); m.scale.setScalar(FOOD); m.userData.sig = sig;
+      map.set(key, m); world.add(m);
     }
-    m.visible = p.where !== 'gone';
-    if (p.where === 'wet' || p.where === 'dry') {
-      // floating in the batter, in the middle of the bowl
-      const b = bowls[p.where];
-      m.position.set(p.x / SCALE, b.mesh.position.y + 0.17 * b.k, b.mesh.position.z);
-    } else if (p.where === 'basket') {
-      const list = basketPieces(), i = list.indexOf(p), k = basketMesh.scale.x;
-      m.position.copy(basketMesh.position).add(new THREE.Vector3((i - (list.length - 1) / 2) * 0.1 * k, 0.03 * k, 0));
-    } else if (p.where === 'served') {
-      m.position.copy(plateMesh.position); m.position.x += (p.x - (L.plate.x + L.plate.w / 2)) / SCALE; m.position.y += 0.02 * plateMesh.scale.x;
-    } else {
-      // Free pieces: the model's base shows at the logic point, so resting on a counter it sits on the top.
-      m.position.copy(P.at(p.x, p.y, R / (s3.sinE * SCALE)));
-    }
+    m.visible = true;
+    return m;
   }
-  /** Basket: held it follows the pointer; in the oil it sits in the vat; otherwise it hangs on the hook. */
-  function placeBasket() {
-    const m = basketMesh;
-    if (basket.inOil && !held?.basket) {
-      m.position.set((basket.x - L.bw * 0.1) / SCALE, oil.position.y - 0.08 * m.scale.x, oil.position.z);
-    } else {
-      m.position.copy(P.at(basket.x - L.bw * 0.1, basket.y + L.bh / 2 - 6, 0.3));
-    }
-  }
-  /** Where the basket appears on screen (for the cook timer and sparkles). */
-  const basketScreenY = () => s3.toView(basketMesh.position).y - 10;
+  function prune(map, live) { for (const [k, m] of map) if (!live.includes(k)) { m.removeFromParent(); map.delete(k); } }
 
   function draw() {
     if (needBuild) { needBuild = false; build(); }
-    placeBasket();
-    for (const p of pieces) syncPiece(p);
-    for (const [p, m] of meshes) if (!pieces.includes(p)) { m.removeFromParent(); meshes.delete(p); }
-    syncSplats();
-    basketMesh.rotation.z = held?.basket ? clamp((pointerAt.x - basket.x) * -0.004, -0.3, 0.3) : 0;
-    oil.material = toonMat({ color: basket.inOil ? '#f2b84b' : '#e0a83a' });
-    plateMesh.position.x = (L.plate.x + L.plate.w / 2 + (plateAway > 0 && plateAway < 0.45 ? (0.45 - plateAway) * 800 : 0)) / SCALE;
+    // the piece in hand: dips down into a bowl and comes back up
+    if (hand) {
+      const m = meshFor(handMap, 'hand', look(hand.kind, hand.coat));
+      let x = L.hand.x, y = L.hand.y, back = depthFree();
+      if (hand.dip) {
+        const r = L[hand.dip.to], k = Math.sin(Math.PI * clamp(hand.dip.t / DIP, 0, 1));
+        x = lerp(L.hand.x, r.x + r.w / 2, k); y = lerp(L.hand.y, r.y + 12, k); back = lerp(back, 0.26 * bowls[hand.dip.to].k, k);
+      }
+      m.scale.setScalar(FOOD * (0.2 + 0.8 * ease(hand.pop)));
+      m.position.copy(P.at(x, y + R * 0.7, back));
+      m.rotation.set(0, 0.6, 0);
+    } else prune(handMap, []);
+    // flying pieces
+    for (const f of flying) { const m = meshFor(flyMeshes, f, look(f.kind, 'coated')); m.position.copy(P.at(f.x, f.y + R * 0.6, depthFree())); m.rotation.set(0, 0, f.rot); }
+    prune(flyMeshes, flying);
+    // the basket and what's in it
+    const o = rim(), k = basketMesh.scale.x;
+    if (basket.lifted) basketMesh.position.copy(P.at(o.x - L.bw * 0.1, o.y + L.bh - 6, 0.3));
+    else basketMesh.position.set((o.x - L.bw * 0.1) / SCALE, oil.position.y - 0.07 * k + (basket.dump > 0 ? 0.45 * Math.sin(Math.PI * basket.dump) : 0), oil.position.z);
+    const sway = basket.lifted ? clamp((basket.lx - (basket.lastDrawX ?? basket.lx)) * -0.025, -0.4, 0.4) : 0;
+    basketMesh.rotation.z = lerp(basketMesh.rotation.z, sway, 0.4);
+    basketMesh.rotation.x = basket.dump > 0 ? -Math.sin(Math.PI * basket.dump) * 0.9 : 0;
+    basket.lastDrawX = basket.lx;
+    basket.pieces.forEach((pc, i) => {
+      const m = meshFor(inMeshes, pc, look(pc.kind, 'coated', pc.cook));
+      m.position.copy(basketMesh.position).add(new THREE.Vector3(((i % 2) - 0.5) * 0.1 * k, (0.035 + (i > 1 ? 0.03 : 0)) * k, (i > 1 ? 0.03 : -0.02) * k));
+      m.rotation.set(0, pc.slot * 6, 0);
+    });
+    prune(inMeshes, basket.pieces);
+    oil.material = toonMat({ color: basket.splash > 0 || (basket.pieces.length && !basket.lifted) ? '#f2b84b' : '#e9a23b' });
+    // tipped-out pieces arc onto the plate
+    for (const s of served) {
+      const m = meshFor(servedMeshes, s, look(s.kind, 'coated', s.cook));
+      const kk = ease(clamp(s.t / 0.45, 0, 1));
+      const to = { x: L.plate.x + L.plate.w * (0.25 + (s.slot % 5) * 0.12), y: L.plate.y - 6 };
+      m.position.copy(P.at(lerp(s.from.x, to.x, kk), lerp(s.from.y, to.y, kk) - Math.sin(kk * Math.PI) * 60, L.plate.shelf ? 0.2 : 0.25));
+      if (kk >= 1) m.position.y = Math.max(m.position.y, plateMesh.position.y + 0.02);
+      m.visible = s.t < 1.4;
+    }
+    prune(servedMeshes, served);
+    // dropped pieces lie on the floor for a moment
+    for (const d of dropped) { const m = meshFor(dropMeshes, d, look(d.kind, 'coated')); m.position.copy(s3.at(d.x, L.floorY - 12, 0)); m.rotation.set(0, d.x, 1.3); }
+    prune(dropMeshes, dropped);
     s3.render();
 
-    // 2D: labels, dipping rings, the cook timer, notes
-    const { W } = view;
+    /* overlay */
     s3.begin2d();
-    const label = (t, x, base) => text(g, t, x, base + 18, { size: 12, color: '#fff', weight: 800, stroke: 'rgba(60,50,60,.55)' });
-    label('Raw', L.tray.x + L.tray.w / 2, L.tray.base);
-    label('Wet batter', L.wet.x + L.wet.w / 2, L.wet.base);
-    label('Flour', L.dry.x + L.dry.w / 2, L.dry.base);
-    label('Fryer', L.fryer.x + L.fryer.w / 2, L.fryer.base);
-    label('Plate', L.plate.x + L.plate.w / 2, L.plate.base);
-    for (const p of pieces) {
-      const taking = (p.where === 'wet' && p.coat === 'raw') || (p.where === 'dry' && p.coat === 'wet');
-      if (taking) { g.beginPath(); g.arc(p.x, p.y - 4, R + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(p.dip / DIP, 0, 1)); g.strokeStyle = C.leaf; g.lineWidth = 4; g.stroke(); }
-      else if ((p.where === 'wet' && p.coat === 'wet') || (p.where === 'dry' && p.coat === 'coated')) text(g, '✓', p.x + R, p.y - R - 6, { size: 18, color: C.leafD, weight: 800, stroke: '#fff' });
-      if (p.where === 'basket' && basket.inOil && p.cook >= GOLDEN[0] && p.cook <= GOLDEN[1]) text(g, '✨', p.x + R * 0.6, basketScreenY() - 18, { size: 13 });
+    const label = (s, x, y) => text(g, s, x, y, { size: 12, color: '#fff', weight: 800, stroke: 'rgba(60,50,60,.55)' });
+    label(view.portrait ? 'Wet' : '1 · Wet batter', L.wet.x + L.wet.w / 2, L.counterY + 18);
+    label(view.portrait ? 'Flour' : '2 · Flour', L.dry.x + L.dry.w / 2, L.counterY + 18);
+    label('Fryer', L.fryer.x + L.fryer.w / 2, L.counterY + 18);
+    // the bowl to tap next
+    if (hand && !hand.dip && hand.coat !== 'coated') {
+      const r = hand.coat === 'raw' ? L.wet : L.dry, pulse = 0.5 + 0.5 * Math.sin(t * 8);
+      g.save(); g.globalAlpha = 0.5 + 0.4 * pulse; g.setLineDash([8, 6]); g.lineWidth = 3; g.strokeStyle = C.butterD;
+      g.beginPath(); g.ellipse(r.x + r.w / 2, r.y + 8, r.w / 2 + 6, 16, 0, 0, Math.PI * 2); g.stroke(); g.restore();
     }
-    const list = basketPieces();
-    if (basket.inOil && list.length) {
-      const c = Math.max(...list.map((p) => p.cook)), k = clamp(c / BURNT, 0, 1);
-      const tw = L.bw, tx = basket.x - tw / 2, ty = basketScreenY() - 46;
-      box(g, tx, ty, tw, 10, { fill: '#fff', r: 5, stroke: C.line, lw: 2 });
-      g.fillStyle = '#f2c14e'; g.fillRect(tx + tw * (GOLDEN[0] / BURNT), ty, tw * ((GOLDEN[1] - GOLDEN[0]) / BURNT), 10);
-      circle(g, tx + tw * k, ty + 5, 7, c > GOLDEN[1] ? C.berry : c >= GOLDEN[0] ? C.leaf : '#fff', C.ink, 2);
+    // ready to throw: a ring round the hand; the aim arc while pulling back
+    if (ready() && !aim) { g.save(); g.globalAlpha = 0.55 + 0.35 * Math.sin(t * 6); circle(g, L.hand.x, L.hand.y, 34, null, C.leaf, 3); g.restore(); }
+    if (aim && ready()) {
+      const v = launchVelocity(aim);
+      g.save(); g.setLineDash([4, 4]); g.strokeStyle = 'rgba(74,52,40,.45)'; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(L.hand.x, L.hand.y); g.lineTo(aim.x, aim.y); g.stroke(); g.restore();
+      g.fillStyle = 'rgba(255,255,255,.95)'; g.strokeStyle = C.ink; g.lineWidth = 1.5;
+      // only the start of the arc: judging where it lands is the game
+      for (let i = 1; i <= 5; i++) {
+        const tt = i * 0.05, x = L.hand.x + v.vx * tt, y = L.hand.y + v.vy * tt + 0.5 * GRAVITY * tt * tt;
+        g.beginPath(); g.arc(x, y, 5 - i * 0.5, 0, Math.PI * 2); g.fill(); g.stroke();
+      }
+    }
+    // next up
+    const nx = view.portrait ? L.hand.x - 66 : L.wet.x + L.wet.w + 6, ny = view.portrait ? L.hand.y - 40 : L.wet.y - 64;
+    text(g, 'next', nx, ny - 26, { size: 11, color: C.muted, weight: 800, stroke: '#fff' });
+    queue.slice(0, 2).forEach((q, i) => {
+      g.save(); g.globalAlpha = i ? 0.55 : 0.9; g.drawImage(icon(s3.renderer, q.kind), nx - 14 + (i ? 30 : 0) * (view.portrait ? -1 : 1), ny - 14, 28, 28); g.restore();
+    });
+    // the cook meter (a dot per piece) — or the drain meter while shaking
+    const mw = Math.max(90, L.bw), mx = o.x - mw / 2, my = Math.max(14, o.y - 74);
+    if (basket.lifted && basket.pieces.length) {
+      box(g, mx, my, mw, 12, { fill: '#fff', r: 6, stroke: C.line, lw: 2 });
+      box(g, mx, my, Math.max(12, mw * clamp(basket.drain, 0, 1)), 12, { fill: C.sea, r: 6 });
+      text(g, 'Shake to drain!', o.x, my - 12, { size: 13, color: C.seaD, weight: 800, stroke: '#fff' });
+    } else if (basket.pieces.length) {
+      box(g, mx, my, mw, 10, { fill: '#fff', r: 5, stroke: C.line, lw: 2 });
+      g.fillStyle = '#f2c14e'; g.fillRect(mx + mw * (GOLDEN[0] / BURNT), my, mw * ((GOLDEN[1] - GOLDEN[0]) / BURNT), 10);
+      for (const pc of basket.pieces) circle(g, mx + mw * clamp(pc.cook / BURNT, 0, 1), my + 5, 6, pc.cook > GOLDEN[1] ? C.berry : pc.cook >= GOLDEN[0] ? C.leaf : '#fff', C.ink, 1.5);
+      const gold = basket.pieces.filter((pc) => pc.cook >= GOLDEN[0] && pc.cook <= GOLDEN[1]).length;
+      if (gold) text(g, gold === basket.pieces.length ? 'Golden — grab & shake!' : `${gold} golden`, o.x, my - 13, { size: 13, color: C.leafD, weight: 800, stroke: '#fff' });
+      text(g, `${basket.pieces.length}/${HOLDS}`, mx + mw + 16, my + 5, { size: 12, color: C.ink, weight: 800, stroke: '#fff' });
     }
     pops.draw(g);
-    if (ctx.elapsed() < 6) text(g, view.portrait ? 'Drag a piece into the wet batter' : 'Drag a piece from the tray into the wet batter →', W / 2, L.hintY, { size: 15, color: C.ink, weight: 800, stroke: '#fff', alpha: 1 - Math.max(0, ctx.elapsed() - 4) / 2 });
+    if (t < 7) {
+      const tip = !hand || hand.coat !== 'coated' ? 'Tap the wet batter, then the flour' : 'Pull back from the piece and let go to toss it in the basket';
+      text(g, tip, view.W / 2, L.hintY, { size: 15, color: C.ink, weight: 800, stroke: '#fff', alpha: clamp(7 - t, 0, 1) });
+    }
   }
 
   return {
+    start() { newPiece(); },
     update(dt) { if (!ctx.over) step(dt); else pops.update(dt); },
     draw,
     /** For automated play-tests. */
-    peek() { return { L, basket: { ...basket }, pieces: pieces.map((p) => ({ x: p.x, y: p.y, where: p.where, coat: p.coat, cook: p.cook, dip: p.dip })), view: { ...view } }; },
-    destroy() { offPointer(); s3.destroy(); },
+    peek() {
+      return {
+        view: { ...view }, L, gravity: GRAVITY, pull: PULL, golden: GOLDEN, t,
+        hand: hand && { coat: hand.coat, dipping: !!hand.dip }, ready: ready(),
+        basket: { ...rim(), lifted: basket.lifted, pieces: basket.pieces.map((p) => p.cook), dump: basket.dump, phase: basket.phase, span: driftSpan(), mid: L.fryer.x + L.fryer.w / 2, speed: lerp(0.55, 1.5, clamp(t / ctx.seconds, 0, 1)) },
+        flying: flying.length,
+      };
+    },
+    destroy() { offPointer(); window.removeEventListener('keydown', onKey); s3.destroy(); },
   };
 }
 
