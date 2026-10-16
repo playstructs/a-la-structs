@@ -261,6 +261,35 @@ export const sfx = {
     [79, 76, 72, 69].forEach((n, i) => bell(t + i * 0.22, midi(n), { vel: 0.3, bus: 'effects', decay: 1.2 }));
     pad(t + 0.4, [57, 60, 64].map(midi), 1.4, { vel: 0.5, bus: 'effects', wet: 0.4, cutoff: 700 });
   },
+  /* ── mini games: short cues, never throttled ─────────────────────────── */
+  /** One of the critter work sounds, right now (sfx.action rations them for the restaurant). */
+  work(kind, { dur = 0.4, pan = 0, vol = 1 } = {}) {
+    if (!ok() || !ACTIONS[kind]) return;
+    try { ACTIONS[kind](T() + 0.01, dur, { pan, vol, cup: false }); } catch (e) { console.warn('[sfx]', e); }
+  },
+  /** A marimba beat for rhythm games; `step` walks a little four-note riff. */
+  beat(step = 0, { accent = false } = {}) {
+    if (!ok()) return; const t = T();
+    marimba(t, midi([67, 72, 71, 74][step % 4] + (accent ? 12 : 0)), { vel: accent ? 0.45 : 0.3, bus: 'effects' });
+    hiss(t, { dur: 0.02, type: 'highpass', freq: 6000, peak: accent ? 0.05 : 0.03 });
+  },
+  countdown(last = false) { if (!ok()) return; bell(T(), midi(last ? 91 : 84), { vel: 0.35, bus: 'effects', decay: last ? 0.9 : 0.4 }); },
+  good(streak = 0) {
+    if (!ok()) return; const t = T(), up = Math.min(streak, 6);
+    marimba(t, midi(76 + up), { vel: 0.45, bus: 'effects' }); marimba(t + 0.06, midi(83 + up), { vel: 0.4, bus: 'effects' });
+  },
+  miss() {
+    if (!ok()) return; const t = T();
+    thump(t, { freq: 120, peak: 0.22, knock: 600 });
+    marimba(t + 0.02, midi(58), { vel: 0.35, bus: 'effects' }); marimba(t + 0.12, midi(57), { vel: 0.3, bus: 'effects' });
+  },
+  /** Crockery hitting the floor. */
+  smash(n = 4) {
+    if (!ok()) return; const t = T();
+    hiss(t, { dur: 0.25, type: 'highpass', freq: 2500, peak: 0.12, kind: 'white' });
+    for (let i = 0; i < Math.min(8, n + 2); i++) strike(t + i * rnd(0.02, 0.06), rnd(1600, 3400), CERAMIC, { peak: 0.08, pan: rnd(-0.4, 0.4) });
+  },
+  star(i = 0) { if (!ok()) return; const t = T(); bell(t, midi([84, 88, 91][i] || 96), { vel: 0.45, bus: 'effects', decay: 1.1 }); hiss(t, { dur: 0.3, type: 'highpass', freq: 7500, peak: 0.03 }); },
   chat() {
     if (!ok()) return; const t = T();
     for (const [at, f0, f1] of [[0, 600, 900], [0.07, 750, 1150]]) {

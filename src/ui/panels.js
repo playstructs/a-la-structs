@@ -15,13 +15,17 @@ import { is, isCommand, weaponsOf, possibleAreas, cash, gold, weaponReach } from
 import { sfx } from '../audio/sfx.js';
 import { music, SONGS } from '../audio/music.js';
 import { pager, stepper } from './widgets.js';
+import { gameForType, isPlayable, starsFor } from '../minigames/registry.js';
+import { SKINS, myOutfit, outfitAt, unlockedTier, wornTier, tierWord } from '../minigames/skins.js';
+import { starRow } from '../minigames/Runner.js';
 
 export function face(app, struct, type, opts = {}) {
   const role = roleOf(type);
   const r = app.engine.renderer;
   if (role.kind === 'equipment' || PROP_IS_STRUCT.has(role.station)) return propPortrait(r, role.station);
   const species = opts.species || (isCommand(type) && struct.owner === app.svc.state.me.id ? app.svc.state.me.species : speciesFor(struct.id));
-  const outfit = opts.customer ? (role.customer?.outfit || 'casual') : (role.outfit || 'casual');
+  const mine = struct.owner === app.svc.state.me.id && !opts.customer;
+  const outfit = opts.customer ? (role.customer?.outfit || 'casual') : mine && role.outfit ? myOutfit(role.outfit) : (role.outfit || 'casual');
   const seed = isCommand(type) ? struct.owner : struct.id;
   return portrait(r, { species, outfit, seed });
 }
@@ -129,6 +133,10 @@ export function staffSheet(app, id) {
     ));
   }
 
+  // shift practice: hired crew can play their role's mini game for uniforms
+  const game = gameForType(t);
+  if (game && mine && is.built(s) && !inChallenge && !app.readOnly) body.push(practiceSection(app, s, game));
+
   // actions for my own staff
   const foot = [];
   if (mine && !app.readOnly) {
@@ -158,6 +166,33 @@ export function staffSheet(app, id) {
     }
   }
   return { title, body, foot };
+}
+
+function practiceSection(app, s, game) {
+  const best = app.miniScores?.[game.key] || 0;
+  const have = unlockedTier(game.outfit);
+  const wearing = wornTier(game.outfit);
+  const species = speciesFor(s.id);
+  const playable = isPlayable(game);
+  const swatch = (tier) => {
+    const open = tier <= have;
+    const label = tier ? SKINS[game.outfit][tier - 1].name : 'Standard';
+    return h('button', {
+      class: `mg-swatch ${wearing === tier ? 'on' : ''}`, disabled: !open, 'aria-pressed': String(wearing === tier),
+      title: open ? `Wear ${label}` : `Earn ${tier} star${tier > 1 ? 's' : ''} in ${game.title} to unlock`,
+      onclick: () => { sfx.click(); app.wearSkin(game.outfit, tier); },
+    },
+    h('img', { src: portrait(app.engine.renderer, { species, outfit: outfitAt(game.outfit, tier), seed: s.id }), alt: '' }),
+    h('small', {}, open ? label : `${tierWord(tier)} ${'★'.repeat(tier)}`));
+  };
+  return h('div', { class: 'practice' },
+    h('div', { class: 'section-title' }, 'Shift practice'),
+    h('div', { class: 'practice-game' },
+      h('div', {}, h('b', {}, game.title), h('small', {}, best ? h('span', {}, starRow(starsFor(game, best), 3, 'small'), ` Best ${best} ${game.unit}`) : `${game.seconds}-second challenge · win uniforms`)),
+      h('button', { class: 'btn small berry', disabled: !playable, title: playable ? null : 'Coming soon', onclick: () => { sfx.open(); app.playMiniGame(s.id, game); } }, playable ? 'Play' : 'Soon')),
+    h('div', { class: 'section-title' }, `${roleOf(app.svc.state.types.get(s.typeId)).role} uniform`),
+    h('div', { class: 'mg-swatches' }, ...[0, 1, 2, 3].map(swatch)),
+    h('p', { class: 'hint' }, 'Every one of your critters in this role wears the uniform you pick.'));
 }
 
 /* ── Hire & Buy ─────────────────────────────────────────────────────────── */

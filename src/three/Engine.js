@@ -68,6 +68,10 @@ export class Engine extends EventTarget {
     this.active?.onResize?.(this);
   }
 
+  /** Stop drawing while something full screen (a mini game) covers the canvas. */
+  pause() { this.renderer.setAnimationLoop(null); }
+  resume() { this.clock.getDelta(); this.renderer.setAnimationLoop(() => this.frame()); }
+
   /** Swap the running scene. The controller provides { scene, update, enter, exit, pick }. */
   setScene(controller) {
     if (this.active && this.active !== controller) this.active.exit?.(this);

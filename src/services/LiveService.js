@@ -13,7 +13,8 @@
  */
 import './live/polyfills.js';
 import { makeNoop } from './live/noop.js';
-import { Service, nameProblem, describeBrowser, PAGE_SIZE } from './Service.js';
+import { Service, nameProblem, describeBrowser, PAGE_SIZE, readLocalScores, writeLocalScore } from './Service.js';
+import { INTERFACE_NAME } from '../minigames/registry.js';
 import { forgetSession } from './session.js';
 import { TypeCatalog, normalizeStruct, is, isCommand, weaponField, hasWeapon, STATUS } from '../game/model.js';
 import { roleOf } from '../lexicon/roles.js';
@@ -869,6 +870,42 @@ export class LiveService extends Service {
     const id = this.state.me.id;
     try { return Number(await this.api.getSingleDataValue(`${this.api.apiUrl}/player/${id}/raid/won`, 'count')) > 0; } catch (e) { /* older group server */ }
     try { return Number((await this.api.getPlayerOreStats(id, true))?.seized) > 0; } catch (e) { return false; }
+  }
+
+  /* ── shift practice (mini games) ──────────────────────────────────────── */
+
+  /**
+   * Best scores from the group server's mini_game_progress, merged with this
+   * browser's copy. A score that only made it into the local copy (server
+   * down, older group server) is sent up again.
+   */
+  async miniGameScores() {
+    const local = readLocalScores(this.scoreKey());
+    let rows;
+    try {
+      const r = await this.api.ajax.get(`${this.api.apiUrl}/player/${encodeURIComponent(this.state.me.id)}/mini-game/${INTERFACE_NAME}`);
+      if (!r?.success || !Array.isArray(r.data)) return local;
+      rows = r.data;
+    } catch (e) { return local; }
+    const merged = { ...local };
+    for (const row of rows) merged[row.game_name] = Math.max(Number(row.score) || 0, Number(local[row.game_name]) || 0);
+    const server = new Map(rows.map((row) => [row.game_name, Number(row.score) || 0]));
+    for (const [game, score] of Object.entries(local)) {
+      if (score > (server.get(game) ?? -1)) this.putMiniGameScore(game, score).catch(() => {});
+    }
+    for (const [game, score] of Object.entries(merged)) writeLocalScore(this.scoreKey(), game, score);
+    return merged;
+  }
+
+  async saveMiniGameScore(game, score) {
+    const local = writeLocalScore(this.scoreKey(), game, score);
+    try { return Math.max(local, await this.putMiniGameScore(game, score)); } catch (e) { return local; }
+  }
+
+  async putMiniGameScore(game, score) {
+    const r = await this.api.ajax.put(`${this.api.apiUrl}/player/mini-game/progress`, { interface_name: INTERFACE_NAME, game_name: game, score: Math.floor(score) });
+    if (!r?.success) throw new Error('mini game progress not saved');
+    return Number(r.data?.score) || 0;
   }
 
   async getProfile(playerId = this.state.me.id) {

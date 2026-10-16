@@ -191,6 +191,29 @@ export class Service extends EventTarget {
   async bankWithdraw(/* amount */) { throw new Error('not implemented'); }
   /** Groups to filter the rival search by: [{ id, name }]. */
   async rivalGroups() { return []; }
+
+  /* ── shift practice (mini games) ──────────────────────────────────────── */
+  /**
+   * Best mini game scores: { [gameKey]: score }. The base keeps them in this
+   * browser (the demo kitchen has no server); LiveService saves them to the
+   * group server's mini_game_progress and keeps this copy as a fallback.
+   */
+  async miniGameScores() { return readLocalScores(this.scoreKey()); }
+  /** Record a run; resolves to the best score now stored. */
+  async saveMiniGameScore(game, score) { return writeLocalScore(this.scoreKey(), game, score); }
+  scoreKey() { return `aLaStructs.miniGames.v1.${this.mode}.${this.state.me.id || 'me'}`; }
+}
+
+export function readLocalScores(key) {
+  try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (e) { return {}; }
+}
+
+export function writeLocalScore(key, game, score) {
+  const all = readLocalScores(key);
+  const best = Math.max(Number(all[game]) || 0, Math.max(0, Math.floor(Number(score) || 0)));
+  all[game] = best;
+  try { localStorage.setItem(key, JSON.stringify(all)); } catch (e) { /* storage unavailable */ }
+  return best;
 }
 
 /** Takings the bank would pay for `invested` gold: ratio × (1 − commission), like ManageAlphaViewModel. */

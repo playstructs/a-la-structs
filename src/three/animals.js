@@ -273,6 +273,12 @@ function buildHat(outfit) {
       b.sphere(0.06, c, { y: 0.0, z: -0.3 });
       b.cone(0.05, 0.12, c, { y: -0.06, z: -0.33, rx: 0.6 }, 4);
       break;
+    case 'crown': {
+      b.cyl(0.2, 0.19, 0.1, c, { y: top + 0.06 });
+      for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; b.cone(0.045, 0.1, c, { x: Math.cos(a) * 0.17, y: top + 0.15, z: Math.sin(a) * 0.17 }, 4); }
+      b.sphere(0.035, outfit.gem || '#ff7a8a', { y: top + 0.07, z: 0.19 });
+      break;
+    }
     case 'fedora':
       b.cyl(0.35, 0.35, 0.02, c, { y: top + 0.0 });
       b.cyl(0.19, 0.22, 0.17, c, { y: top + 0.09 });
@@ -307,6 +313,7 @@ function buildTorso(species, pal, o) {
     }
     b.torus(0.205, 0.015, o.apron, { y: 0.32, rx: Math.PI / 2 });
   }
+  if (o.pin) { b.sphere(0.035, o.pin, { x: -0.1, y: 0.47, z: 0.18, sz: 0.5 }); b.sphere(0.018, '#ffffff', { x: -0.11, y: 0.48, z: 0.195 }); }
   if (o.badge) b.box(0.07, 0.04, 0.02, '#ffd23f', { x: 0.09, y: 0.46, z: 0.18 }, 0.01);
   switch (o.neck) {
     case 'bowtie':

@@ -27,6 +27,8 @@ import { AREAS } from '../lexicon/areas.js';
 import { nameFor, SPECIES, SPECIES_NAMES, speciesFor, awningFor } from '../lexicon/names.js';
 import { is, isCommand, cash, gold, weaponField } from '../game/model.js';
 import { OUTFITS } from '../three/outfits.js';
+import { MiniGameRunner } from '../minigames/Runner.js';
+import { setSkinState, myOutfit, wornTier } from '../minigames/skins.js';
 
 const PREFS_KEY = 'aLaStructs.prefs.v1';
 
@@ -440,6 +442,63 @@ export class App {
     this.guide = new Guide(this);
     this.guide.start();
     this.hudTimer = setInterval(() => this.renderHud(), 500);
+    this.loadMiniScores();
+  }
+
+  /* ── shift practice (mini games) ──────────────────────────────────────── */
+
+  async loadMiniScores() {
+    const svc = this.svc;
+    this.miniScores = {};
+    setSkinState({ picks: this.prefs.skins || {}, scores: {} });
+    let scores = {};
+    try { scores = await svc.miniGameScores(); } catch (e) { /* none yet */ }
+    if (this.svc !== svc) return;
+    this.miniScores = scores;
+    this.skinsChanged();
+  }
+
+  async saveMiniGame(game, score) {
+    const best = await this.svc.saveMiniGameScore(game.key, score);
+    this.miniScores = { ...this.miniScores, [game.key]: Math.max(best, this.miniScores?.[game.key] || 0) };
+    this.skinsChanged();
+    return best;
+  }
+
+  wearSkin(outfitKey, tier) {
+    this.prefs.skins = { ...(this.prefs.skins || {}), [outfitKey]: tier };
+    if (!tier) delete this.prefs.skins[outfitKey];
+    this.savePrefs();
+    this.skinsChanged();
+  }
+
+  /** New scores or picks: redress the crew and redraw their card. */
+  skinsChanged() {
+    setSkinState({ picks: this.prefs.skins || {}, scores: this.miniScores || {} });
+    if (this.homeScene && this.svc) this.syncHome();
+    if (this.challengeScene && this.svc?.state.challenge) this.syncChallenge();
+    if (this.sheet?.kind === 'staff') this.refreshSheet(true);
+  }
+
+  playMiniGame(structId, game) {
+    const s = this.svc.state.structs.get(structId);
+    if (!s || s.owner !== this.svc.state.me.id || !is.built(s)) return;
+    this.miniRunner?.close();
+    this.miniRunner = new MiniGameRunner(this, game, { species: speciesFor(s.id), seed: s.id, name: nameFor(s.id) });
+    this.miniRunner.open();
+  }
+
+  miniGameClosed() {
+    this.miniRunner = null;
+    if (this.sheet?.kind === 'staff') this.refreshSheet(true);
+  }
+
+  /** Scene hooks: my crew wear the uniform picked for their role. */
+  dressing(meId) {
+    return {
+      outfitFor: (s, role) => (s.owner === meId && role.outfit ? myOutfit(role.outfit) : null),
+      skinKey: (s, role) => (s.owner === meId && role.outfit ? wornTier(role.outfit) : 0),
+    };
   }
 
   makeHomeScene() {
@@ -484,7 +543,7 @@ export class App {
 
   syncHome() {
     const s = this.svc.state;
-    this.homeScene.sync([...s.structs.values()], { types: s.types, ownerSpecies: s.me.species, ownerSeed: s.me.id || 'me', crewAway: s.crew.status === 'away', jobs: s.jobs });
+    this.homeScene.sync([...s.structs.values()], { types: s.types, ownerSpecies: s.me.species, ownerSeed: s.me.id || 'me', crewAway: s.crew.status === 'away', jobs: s.jobs, ...this.dressing(s.me.id) });
   }
 
   ensureChallengeScene() {
@@ -502,7 +561,7 @@ export class App {
   syncChallenge() {
     const s = this.svc.state, ch = s.challenge;
     if (!ch || !this.challengeScene) return;
-    this.challengeScene.sync([...ch.structs.values()], { types: s.types, hostId: ch.hostId, meId: s.me.id, ownerSpecies: ch.host.species, ownerSeed: ch.hostId === s.me.id ? (s.me.id || 'me') : ch.hostId, guestSpecies: ch.guest.species, jobs: s.jobs });
+    this.challengeScene.sync([...ch.structs.values()], { types: s.types, hostId: ch.hostId, meId: s.me.id, ownerSpecies: ch.host.species, ownerSeed: ch.hostId === s.me.id ? (s.me.id || 'me') : ch.hostId, guestSpecies: ch.guest.species, jobs: s.jobs, ...this.dressing(s.me.id) });
   }
 
   onChange(what) {

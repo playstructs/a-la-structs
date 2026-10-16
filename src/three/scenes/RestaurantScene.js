@@ -154,7 +154,7 @@ export class RestaurantScene extends EventTarget {
 
   placementKey(s, t) {
     const role = roleOf(t);
-    return `${s.locationType}:${s.ambit}:${isCommand(t) ? 'cmd' : s.slot}:${role.display}`;
+    return `${s.locationType}:${s.ambit}:${isCommand(t) ? 'cmd' : s.slot}:${role.display}:${this.ctx?.skinKey?.(s, role) || 0}`;
   }
 
   placement(s, t) {
@@ -196,7 +196,7 @@ export class RestaurantScene extends EventTarget {
       this.env.group.add(a.prop);
     }
     if (role.kind === 'staff' && !PROP_IS_STRUCT.has(propKey)) {
-      const outfit = OUTFITS[role.outfit] || OUTFITS.casual;
+      const outfit = this.ctx?.outfitFor?.(s, role) || OUTFITS[role.outfit] || OUTFITS.casual;
       a.character = new Character({ species: a.species, outfit, seed: isCommand(t) ? s.owner : s.id, data: { structId: s.id } });
       a.character.setPosition(place.stand.x, 0, place.stand.z);
       a.character.object.rotation.y = place.face || 0;
