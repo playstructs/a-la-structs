@@ -456,9 +456,11 @@ export class App {
     if (this.svc !== svc) return;
     this.miniScores = scores;
     this.skinsChanged();
+    this.guide?.check(true);   // a game played before the guide step existed still counts
   }
 
   async saveMiniGame(game, score) {
+    this.guide?.flag('practiced');
     const best = await this.svc.saveMiniGameScore(game.key, score);
     this.miniScores = { ...this.miniScores, [game.key]: Math.max(best, this.miniScores?.[game.key] || 0) };
     this.skinsChanged();

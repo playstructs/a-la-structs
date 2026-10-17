@@ -1,10 +1,10 @@
 /**
  * Chef Biscuit's Recipe for Success: the new-owner guide.
  *
- * Eight objectives, revealed one at a time: the next appears only when the
+ * Nine objectives, revealed one at a time: the next appears only when the
  * current one is done. Each completes when the thing really happens in the
- * game (you hire someone, open their card, set a cover, deposit gold, win a
- * challenge), never by clicking "next", so nothing waits on the slow parts
+ * game (you hire someone, open their card, set a cover, play a shift
+ * practice game, deposit gold, win a challenge), never by clicking "next", so nothing waits on the slow parts
  * of a real guild. Every objective explains why it matters. "Show me" opens
  * the right place and makes the control to press glow. Progress is kept per
  * owner in localStorage; the guide can be hidden or started over.
@@ -15,6 +15,7 @@ import { OUTFITS } from '../three/outfits.js';
 import { is, isCommand } from '../game/model.js';
 import { roleOf, CATALOG_SECTIONS } from '../lexicon/roles.js';
 import { sfx } from '../audio/sfx.js';
+import { gameForType, isPlayable } from '../minigames/registry.js';
 
 const GUIDE = { name: 'Chef Biscuit', species: 'hamster' };
 const KEY = 'aLaStructs.guide.v2';
@@ -29,6 +30,11 @@ const freeCrew = (app) => {
   const mgr = app.svc.manager();
   const free = mine(app).filter((x) => isCrew(app, x) && is.built(x) && is.online(x) && app.svc.typeOf(x)?.canDefend && !x.protects);
   return free.find((x) => x.ambit === mgr?.ambit) || free[0] || null;
+};
+/** A hired crew member who has a shift practice game, ideally one not covering anyone (less busy). */
+const practiceCrew = (app) => {
+  const ready = mine(app).filter((x) => isCrew(app, x) && is.built(x) && isPlayable(gameForType(app.svc.typeOf(x))));
+  return ready.find((x) => !x.protects) || ready[0] || null;
 };
 const where = (section) => CATALOG_SECTIONS.find((x) => x.key === section)?.title;
 
@@ -89,6 +95,15 @@ export const STEPS = [
     done: 'Good teamwork. Nobody stands alone in this kitchen.',
     test: (app, g) => g.flags.cover,
     show: (app) => { const d = freeCrew(app); if (!d) return false; app.selectStruct(d.id); return '[data-tut=cover]'; },
+  },
+  {
+    id: 'practice',
+    say: 'Every crew role has its own shift practice game on their card — a quick timed challenge. Earn stars to unlock new uniforms (bronze, silver, then gold), and everyone in that role wears the one you pick.',
+    todo: (app) => (practiceCrew(app) ? 'Open a crew member’s card and play their Shift practice game.' : 'Wait for a crew member to finish onboarding, then play their Shift practice game.'),
+    done: 'Look at you go! Practice makes perfect — and fancy uniforms.',
+    // Any finished run counts, including ones played before this step existed.
+    test: (app, g) => g.flags.practiced || Object.keys(app.miniScores || {}).length > 0,
+    show: (app) => { const x = practiceCrew(app); if (!x) return false; app.selectStruct(x.id); return '[data-tut=practice]'; },
   },
   {
     id: 'town',

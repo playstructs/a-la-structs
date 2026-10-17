@@ -189,7 +189,7 @@ function practiceSection(app, s, game) {
     h('div', { class: 'section-title' }, 'Shift practice'),
     h('div', { class: 'practice-game' },
       h('div', {}, h('b', {}, game.title), h('small', {}, best ? h('span', {}, starRow(starsFor(game, best), 3, 'small'), ` Best ${best} ${game.unit}`) : `${game.seconds}-second challenge · win uniforms`)),
-      h('button', { class: 'btn small berry', disabled: !playable, title: playable ? null : 'Coming soon', onclick: () => { sfx.open(); app.playMiniGame(s.id, game); } }, playable ? 'Play' : 'Soon')),
+      h('button', { class: 'btn small berry', 'data-tut': 'practice', disabled: !playable, title: playable ? null : 'Coming soon', onclick: () => { sfx.open(); app.playMiniGame(s.id, game); } }, playable ? 'Play' : 'Soon')),
     h('div', { class: 'section-title' }, `${roleOf(app.svc.state.types.get(s.typeId)).role} uniform`),
     h('div', { class: 'mg-swatches' }, ...[0, 1, 2, 3].map(swatch)),
     h('p', { class: 'hint' }, 'Every one of your critters in this role wears the uniform you pick.'));
