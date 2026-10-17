@@ -10,7 +10,7 @@
  * steel counter seen from above, a hood-type washer with the dishwasher by
  * it; the button, labels and the cycle readout are the 2D overlay.
  */
-import { pointer, C, box, text, lerp, ease, clamp, inRect, dist, Pops } from '../kit.js';
+import { pointer, C, box, circle, text, lerp, ease, clamp, inRect, dist, Pops } from '../kit.js';
 import { stage3d } from '../kit3d.js';
 import { model, defineModel } from '../models.js';
 import * as THREE from 'three';
@@ -20,13 +20,14 @@ const COLS = 5, ROWS = 5;
 const BIN_SLOTS = 8;
 const WASH = 8;                    // seconds per cycle
 const KINDS = [
-  { key: 'cup', ch: '☕', name: 'Cup', cells: [[0, 0]], w: 3, fill: '#ffdcbf', rim: '#e09a62' },
-  { key: 'glass', ch: '🥛', name: 'Glass', cells: [[0, 0]], w: 3, fill: '#d3f0fd', rim: '#6cb8e0' },
-  { key: 'cutlery', ch: '🍴', name: 'Cutlery', cells: [[0, 0]], w: 2, fill: '#e6ebf0', rim: '#8e9ba8' },
-  { key: 'plate', ch: '🍽️', name: 'Plate', cells: [[0, 0], [0, 1]], w: 4, fill: '#ffffff', rim: '#c4ac94' },
-  { key: 'tray', ch: '🍱', name: 'Tray', cells: [[0, 0], [0, 1], [0, 2]], w: 2, fill: '#ffe3a3', rim: '#e3a826' },
-  { key: 'bowl', ch: '🥣', name: 'Bowl', cells: [[0, 0], [1, 0], [0, 1], [1, 1]], w: 2, fill: '#cdeedb', rim: '#4fb383' },
-  { key: 'pan', ch: '🍳', name: 'Pan', cells: [[0, 0], [0, 1], [1, 1]], w: 2, fill: '#d9dee6', rim: '#6c7682' },
+  // pts: what a dish is worth once washed — size, plus a bonus for the long and awkward ones
+  { key: 'cup', ch: '☕', name: 'Cup', pts: 1, cells: [[0, 0]], w: 3, fill: '#ffdcbf', rim: '#e09a62' },
+  { key: 'glass', ch: '🥛', name: 'Glass', pts: 1, cells: [[0, 0]], w: 3, fill: '#d3f0fd', rim: '#6cb8e0' },
+  { key: 'cutlery', ch: '🍴', name: 'Cutlery', pts: 1, cells: [[0, 0]], w: 2, fill: '#e6ebf0', rim: '#8e9ba8' },
+  { key: 'plate', ch: '🍽️', name: 'Plate', pts: 2, cells: [[0, 0], [0, 1]], w: 4, fill: '#ffffff', rim: '#c4ac94' },
+  { key: 'tray', ch: '🍱', name: 'Tray', pts: 4, cells: [[0, 0], [0, 1], [0, 2]], w: 2, fill: '#ffe3a3', rim: '#e3a826' },
+  { key: 'bowl', ch: '🥣', name: 'Bowl', pts: 5, cells: [[0, 0], [1, 0], [0, 1], [1, 1]], w: 2, fill: '#cdeedb', rim: '#4fb383' },
+  { key: 'pan', ch: '🍳', name: 'Pan', pts: 5, cells: [[0, 0], [0, 1], [1, 1]], w: 2, fill: '#d9dee6', rim: '#6c7682' },
 ];
 const BAG = KINDS.flatMap((k) => Array(k.w).fill(k));
 const TAP = 9;                     // view units of wiggle that still count as a tap
@@ -275,10 +276,11 @@ export default function create(ctx) {
     washer.load = null; washer.clean = items; washer.cleanT = 0;
     pieces = pieces.filter((p) => !items.includes(p));
     washed += items.length;
-    ctx.add(items.length);
-    ctx.sfx.good(Math.min(6, items.length / 2)); ctx.sfx.work('glass', { vol: 0.7 });
+    const pts = items.reduce((n, p) => n + p.kind.pts, 0);
+    ctx.add(pts);
+    ctx.sfx.good(Math.min(6, pts / 4)); ctx.sfx.work('glass', { vol: 0.7 });
     const W = L.washer;
-    pops.add(`+${items.length} clean!`, W.x + W.w / 2, W.y + W.h * (L.wide ? 0.25 : 0.4), C.leafD, 22);
+    pops.add(`+${pts} clean!`, W.x + W.w / 2, W.y + W.h * (L.wide ? 0.25 : 0.4), C.leafD, 22);
     crew?.hop(1);
   }
 
@@ -561,6 +563,13 @@ export default function create(ctx) {
     const B = L.bin, full = binFullT > 0;
     const binLabel = full ? `Bin’s full! ${queue.length} more waiting` : queue.length ? `${queue.length} on the way` : 'Dirty dishes';
     text(g, binLabel, B.x + B.w / 2 + shake, B.y + 13, { size: L.wide ? 12 : 13, color: full ? C.berryD : C.ink, weight: 800, stroke: '#fff' });
+    // what each waiting dish is worth: the big and awkward ones pay more
+    for (const p of pieces) {
+      if (p.where !== 'bin' || p.slot < 0) continue;
+      const sl = L.slots[p.slot], big = p.kind.pts >= 4;
+      circle(g, sl.x + sl.w - 9 + shake, sl.y + 9, 10, big ? C.butter : '#fff', big ? C.butterD : C.line, 2);
+      text(g, `${p.kind.pts}`, sl.x + sl.w - 9 + shake, sl.y + 9.5, { size: 12, color: big ? '#6a4a10' : C.muted, weight: 800 });
+    }
     const t = target();
     if (held && held.moved && t) {
       for (const [x, y] of held.piece.cells) box(g, L.rack.x + (t.col + x) * L.cell + 3, L.rack.y + (t.row + y) * L.cell + 3, L.cell - 6, L.cell - 6, { fill: t.ok ? 'rgba(95,194,147,.4)' : 'rgba(255,122,138,.4)', r: 8 });
@@ -611,7 +620,7 @@ export default function create(ctx) {
       return {
         view: { ...view }, L, COLS, ROWS,
         occ: grid(null),
-        pieces: pieces.map((p) => ({ id: p.id, key: p.kind.key, where: p.where, slot: p.slot, col: p.col, row: p.row, cells: p.cells.map((c) => [...c]), size: sizeOf(p.cells) })),
+        pieces: pieces.map((p) => ({ id: p.id, key: p.kind.key, pts: p.kind.pts, where: p.where, slot: p.slot, col: p.col, row: p.row, cells: p.cells.map((c) => [...c]), size: sizeOf(p.cells) })),
         washer: { busy: !!washer.load, t: washer.t, dur: WASH }, queue: queue.length, washed,
       };
     },
