@@ -3,7 +3,7 @@
  * dock in batches; drag each into the walk-in (cold), the dry store or the
  * produce racks (+1). The wrong store bounces it back. The dock only holds
  * so many: when a new crate won't fit, the oldest one goes back on the van
- * (−1). Stations post requests ("Need 🧀!"): drag a matching item from a
+ * (no penalty, but it's a point you didn't get). Stations post requests ("Need 🧀!"): drag a matching item from a
  * store, or straight off the dock, to the station before its timer runs out
  * (+2). Score = crates.
  *
@@ -33,7 +33,7 @@ const STATIONS = [
   { key: 'bakery', name: 'Bakery', icon: '🥐' },
 ];
 const SLOTS = 6;
-const SORT = 1, REQUEST = 2, LOST = -1;
+const SORT = 1, REQUEST = 2;
 const rand = (a, b) => a + Math.random() * (b - a);
 
 /* 3D look */
@@ -150,10 +150,9 @@ export default function create(ctx) {
         if (!old) continue;
         slot = old.slot; old.state = 'gone';
         lost++;
-        ctx.add(LOST);
         ctx.sfx.miss(); ctx.sfx.work('clank', { vol: 0.5 });
         honk = 1;
-        pops.add('Honk! Crate lost −1', clamp(old.x, 90, view.W - 90), old.y - 30, C.berryD, 16);
+        pops.add('Honk! Back on the van', clamp(old.x, 90, view.W - 90), old.y - 30, C.berryD, 16);
       }
       const s = L.slots[slot];
       crates.push({ id: ++uid, ch, cat: CAT.get(ch), slot, x: s.x, y: s.y, state: 'dock', born: ctx.elapsed() + k * 0.01, arrive: -k * stagger });
