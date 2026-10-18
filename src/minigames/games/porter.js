@@ -248,6 +248,11 @@ export default function create(ctx) {
   const offPointer = pointer(st, {
     down: (p) => {
       if (ctx.over || held) return;
+      // A dock crate is waiting for somewhere to go: a tap on a store puts it
+      // there, even on a shelf already holding the same thing.
+      if (selected?.from === 'dock' && L.zones.some((r) => inRect(p, grow(r, 6)))) {
+        const s = selected; selected = null; dropAt(s, p); return;
+      }
       const it = itemAt(p);
       if (it) {
         if (selected) { putBack(selected, selected.at); selected = null; }
