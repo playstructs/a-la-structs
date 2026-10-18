@@ -1,7 +1,7 @@
 /**
  * Bartender — "Slide Down the Bar". Patrons sit along a long bar, each
- * wanting a drink. Hold the right tap to pour and let go at the line (short
- * or spilling pours are tipped away), then flick the glass down the bar: the
+ * wanting a drink. Tap their drink and a ready-poured glass appears at the
+ * pour spot (tap another to swap it), then flick it down the bar: the
  * flick's speed sets how far it slides before friction stops it. It has to
  * come to rest in front of someone who ordered that drink (they'll reach out
  * and catch one that's nearly stopped). Too hard and it sails off the end.
@@ -11,7 +11,7 @@
  * the physics works in `s`, the distance down the bar from the pour spot.
  * Drawn in the restaurant's 3D toon style: the bar top is a tabletop at bar
  * height, patrons are critters on stools, the bartender stands by the taps.
- * Order bubbles, the tap buttons, the fill line and notes are the 2D overlay.
+ * Order bubbles, the drink buttons and notes are the 2D overlay.
  */
 import { pointer, C, box, circle, text, rr, lerp, ease, clamp, inRect, pick, Pops } from '../kit.js';
 import { stage3d } from '../kit3d.js';
@@ -23,13 +23,12 @@ import { SPECIES } from '../../lexicon/names.js';
 import { casualOutfit } from '../../three/outfits.js';
 
 const DRINKS = [
-  { key: 'beer', name: 'Beer', line: 0.8, rate: 0.52, color: '#f2b33d', head: '#fff8e6', glass: 'mug' },
-  { key: 'wine', name: 'Wine', line: 0.5, rate: 0.36, color: '#a3264a', glass: 'wine' },
-  { key: 'soda', name: 'Soda', line: 0.75, rate: 0.62, color: '#7a3b1e', head: '#d9b99b', glass: 'tall' },
-  { key: 'cocktail', name: 'Cocktail', line: 0.62, rate: 0.46, color: '#ff8a5c', glass: 'coupe' },
+  { key: 'beer', name: 'Beer', line: 0.8, color: '#f2b33d', head: '#fff8e6', glass: 'mug' },
+  { key: 'wine', name: 'Wine', line: 0.5, color: '#a3264a', glass: 'wine' },
+  { key: 'soda', name: 'Soda', line: 0.75, color: '#7a3b1e', head: '#d9b99b', glass: 'tall' },
+  { key: 'cocktail', name: 'Cocktail', line: 0.62, color: '#ff8a5c', glass: 'coupe' },
 ];
 const CRITTERS = ['🐻', '🐰', '🦊', '🐼', '🐨', '🐯', '🐸', '🐷', '🐮', '🐹', '🦝', '🐱', '🐶', '🦉'];
-const POUR_OK = 0.065;   // ± around the line
 const DAMP = 1.35;       // friction: dv/dt = −(DAMP·v + DRAG)
 const DRAG = 60;
 const CATCH_V = 180;     // a patron grabs their drink when it's this slow…
@@ -146,9 +145,8 @@ export default function create(ctx) {
   const L = {};
   let taps = [];
   let seats = [];
-  let glass = null;          // the glass at the pour spot: { drink, fill, state: 'empty'|'pouring'|'ready'|'held' , s }
+  let glass = null;          // the glass at the pour spot: { drink, fill, state: 'empty'|'ready'|'held', s }
   let sliding = [];          // glasses on their way down the bar
-  let pouring = null;        // { drinkIndex, id }
   let held = null;           // { id, off, samples }
   let clock = 0, spawnT = 0, streak = 0, newGlassT = 0;
   let started = false;
@@ -204,37 +202,16 @@ export default function create(ctx) {
 
   function freshGlass() { glass = { drink: null, fill: 0, state: 'empty', s: 0 }; }
 
-  /* pouring */
+  /* drinks come ready-poured: tapping one puts it at the pour spot (or swaps the one waiting there) */
   function startPour(i) {
     if (ctx.over || !started) return;
     pressedTap = i;
-    if (!glass) return;
-    if (glass.state === 'ready') { pops.add('Slide this one first!', at(0).x + (L.vertical ? -40 : 60), at(0).y - 60, C.muted, 14); return; }
-    if (glass.state !== 'empty') return;
-    glass.drink = DRINKS[i]; glass.state = 'pouring';
-    pouring = { i };
-    bartender?.play('pour', 1 / DRINKS[i].rate);
-    ctx.sfx.work('pour', { dur: 1 / DRINKS[i].rate, vol: 0.5 });
+    if (!glass || (glass.state !== 'empty' && glass.state !== 'ready')) return;
+    if (glass.state === 'ready' && glass.drink === DRINKS[i]) return;
+    glass.drink = DRINKS[i]; glass.fill = DRINKS[i].line; glass.state = 'ready'; glass.s = 0; glass.back = false;
+    bartender?.play('pour', 0.35);
+    ctx.sfx.work('glass', { vol: 0.5 });
   }
-  function endPour(spilled = false) {
-    if (!pouring || !glass || glass.state !== 'pouring') { pouring = null; return; }
-    pouring = null;
-    const d = glass.drink, off = glass.fill - d.line;
-    const p = at(0), nx = p.x + (L.vertical ? -70 : 70), ny = p.y - 70;
-    if (!spilled && Math.abs(off) <= POUR_OK) {
-      glass.state = 'ready';
-      ctx.sfx.work('glass', { vol: 0.5 });
-      pops.add(Math.abs(off) < POUR_OK / 3 ? 'Perfect pour!' : 'Good pour', nx, ny, C.leafD, 15);
-    } else {
-      glass.state = 'spilt'; glass.t = 0;
-      bartender?.wobble(0.8);
-      streak = 0;
-      ctx.sfx.miss();
-      ctx.sfx.work('slosh', { dur: 0.4, vol: 0.5 });
-      pops.add(spilled ? 'Overflowing!' : off > 0 ? 'Too full!' : 'Short pour!', nx, ny, C.berryD, 16);
-    }
-  }
-
   /* sliding */
   function sampleV() {
     const sm = held.samples;
@@ -299,7 +276,6 @@ export default function create(ctx) {
     move: (p) => { if (held) held.last = along(p); },
     up: (p) => {
       pressedTap = -1;
-      if (pouring) endPour();
       if (held) { held.last = along(p); held.samples.push({ t: clock + 1e-3, s: held.last }); launch(); }
     },
   });
@@ -307,12 +283,6 @@ export default function create(ctx) {
   /* update */
   function step(dt) {
     clock += dt;
-    // pour
-    if (glass && glass.state === 'pouring') {
-      glass.fill += glass.drink.rate * dt;
-      if (glass.fill >= 1) { glass.fill = 1; endPour(true); }
-    }
-    if (glass && glass.state === 'spilt') { glass.t += dt; if (glass.t > 0.5) { glass = null; newGlassT = 0.2; } }
     if (glass && glass.state === 'ready' && glass.s > 0) glass.s = Math.max(0, glass.s - dt * 400);
     if (!glass) { newGlassT -= dt; if (newGlassT <= 0) freshGlass(); }
     // held glass follows the finger until it's past the push zone
@@ -369,14 +339,13 @@ export default function create(ctx) {
   /* ── the 3D bar ─────────────────────────────────────────────────────── */
   const world = new THREE.Group();
   s3.add(world);
-  let bartender = null, tower = null, stream = null;
+  let bartender = null, tower = null;
   let seatSpots = [];             // floor spot of each stool
   const seatLooks = new Map();    // seat index → { who, c, state }
   const glassMeshes = new Map();  // glass (or sliding glass) → { group, liquid, head, sig }
   const shardMeshes = new Map();  // shard → [meshes]
   const glassMat = toonMat({ transparent: true, opacity: 0.45, depthWrite: false });
   const shardGeo = new THREE.TetrahedronGeometry(0.05);
-  const UP = new THREE.Vector3(0, 1, 0);
   const SPECIES_OF = { '🐻': 'bear', '🐰': 'bunny', '🦊': 'fox', '🐼': 'panda', '🐨': 'koala', '🐯': 'cat', '🐸': 'frog', '🐷': 'pig', '🐮': 'sheep', '🐹': 'hamster', '🦝': 'raccoon', '🐱': 'cat', '🐶': 'dog', '🦉': 'duck' };
   let patronN = 0;
   /** World depth (m) covering `u` units of screen height on a level surface. */
@@ -445,8 +414,6 @@ export default function create(ctx) {
       m.position.copy(onBar(seat.s, 0.001)); world.add(m);
     });
     // the pour from a tap into the glass
-    stream = own(new THREE.CylinderGeometry(0.018, 0.018, 1, 8), toonMat({ color: '#f2b33d' }));
-    stream.castShadow = false; stream.visible = false; world.add(stream);
     // the bartender, behind the taps
     if (bartender) s3.dropCritter(bartender);
     bartender = s3.critter({ ...ctx.critter, scale: V ? 1 : 0.92 });
@@ -522,27 +489,13 @@ export default function create(ctx) {
     syncPatrons();
     // the glass at the pour spot
     const live = new Set();
-    stream.visible = false;
     if (glass) {
       live.add(glass);
       const v = glassLook(glass, glass.drink);
       v.group.position.copy(onBar(glass.s));
       v.group.scale.setScalar(GLASS * 1.1);
-      const tilt = glass.state === 'spilt' ? ease(glass.t / 0.4) * (V ? -1.2 : 1.2) : 0;
-      v.group.rotation.set(V ? tilt : 0, 0, V ? 0 : -tilt);
-      if (glass.state === 'spilt') v.group.scale.setScalar(GLASS * 1.1 * (1 - clamp((glass.t - 0.3) / 0.2, 0, 1)));
-      const surf = setFill(v, glass.fill);
-      if (glass.state === 'pouring' && pouring) {
-        // a stream from the tap's spout down into the glass
-        const from = tower.localToWorld(new THREE.Vector3(-0.18 + pouring.i * 0.12, 0.23, 0.05));
-        const to = v.group.position.clone(); to.y += surf * GLASS * 1.1;
-        const dir = to.clone().sub(from), len = dir.length();
-        stream.visible = true;
-        stream.material = toonMat({ color: glass.drink.color });
-        stream.scale.set(1, len, 1);
-        stream.position.copy(from).addScaledVector(dir, 0.5);
-        stream.quaternion.setFromUnitVectors(UP, dir.normalize());
-      }
+      v.group.rotation.set(0, 0, 0);
+      setFill(v, glass.fill);
     }
     // glasses on their way down the bar
     for (const x of sliding) {
@@ -597,33 +550,25 @@ export default function create(ctx) {
     // taps
     taps.forEach((t, i) => {
       const d = DRINKS[i], down = pressedTap === i;
-      const on = glass && (glass.state === 'empty' || (glass.state === 'pouring' && pouring?.i === i));
+      const on = glass && (glass.state === 'empty' || glass.state === 'ready');
+      const picked = glass?.state === 'ready' && glass.drink === d;
       g.save(); if (!on) g.globalAlpha = 0.6;
-      box(g, t.x, t.y + (down ? 3 : 0), t.w, t.h, { fill: down ? C.paper2 : '#fff', stroke: down ? C.butterD : C.line, r: 14, shadow: down ? 0 : 4 });
+      box(g, t.x, t.y + (down ? 3 : 0), t.w, t.h, { fill: down || picked ? C.paper2 : '#fff', stroke: down || picked ? C.butterD : C.line, r: 14, shadow: down ? 0 : 4 });
       box(g, t.x + 6, t.y + 5 + (down ? 3 : 0), 6, t.h - 10, { fill: d.color, r: 3 });
       const is = Math.min(40, t.h * 0.66);
       g.drawImage(pic(s3.renderer, d), t.x + t.w / 2 - is / 2 + 3, t.y + t.h * 0.42 - is / 2 + (down ? 3 : 0), is, is);
       text(g, d.name, t.x + t.w / 2 + 3, t.y + t.h - 10 + (down ? 3 : 0), { size: 11, color: C.muted, weight: 700 });
       g.restore();
     });
-    // the fill line on the glass being poured
-    if (glass && glass.drink && (glass.state === 'pouring' || glass.state === 'empty')) {
-      const v = glassMeshes.get(glass), G = v.G, base = v.group.position, k = GLASS * 1.1;
-      const yAt = (f) => s3.toView(new THREE.Vector3(base.x, base.y + (G.y0 + G.h * f) * k, base.z + G.r * k)).y;
-      const cx = s3.toView(base).x, hw = G.r * k * SCALE * 1.35;
-      const ly = yAt(glass.drink.line), lo = yAt(glass.drink.line - POUR_OK), hi = yAt(glass.drink.line + POUR_OK);
-      g.fillStyle = 'rgba(95,194,147,.3)'; g.fillRect(cx - hw, hi, hw * 2, lo - hi);
-      g.setLineDash([4, 3]); g.strokeStyle = C.leafD; g.lineWidth = 2.5; g.beginPath(); g.moveTo(cx - hw - 4, ly); g.lineTo(cx + hw + 4, ly); g.stroke(); g.setLineDash([]);
-    }
     if (glass) {
       const p = at(glass.s);
-      if (glass.state === 'empty' && started) text(g, 'Hold a tap', p.x + (V ? -80 : 50), p.y - (V ? 20 : 70), { size: 13, color: C.ink, weight: 700, stroke: '#fff' });
+      if (glass.state === 'empty' && started) text(g, 'Pick a drink', p.x + (V ? -80 : 50), p.y - (V ? 20 : 70), { size: 13, color: C.ink, weight: 700, stroke: '#fff' });
       if (glass.state === 'ready') text(g, V ? 'Flick ↑' : 'Flick →', p.x + (V ? -66 : 40), p.y - (V ? 20 : 66), { size: 15, color: C.leafD, weight: 800, stroke: '#fff' });
     }
     pops.draw(g);
     const el = ctx.elapsed();
     if (started && el < 8) {
-      const msg = glass?.state === 'ready' || sliding.length ? 'Flick the glass so it stops at the patron' : 'Hold the tap for their drink — let go on the line';
+      const msg = glass?.state === 'ready' || sliding.length ? 'Flick the glass so it stops at the patron' : 'Tap the drink a patron ordered';
       text(g, msg, V ? W * 0.36 : W / 2, V ? L.start.y + 20 : 24, { size: V ? 12 : 15, color: C.ink, weight: 700, alpha: 1 - Math.max(0, el - 6) / 2, stroke: '#fff' });
     }
   }
@@ -656,11 +601,10 @@ export default function create(ctx) {
     peek() {
       return {
         view: { ...view }, start: { ...L.start }, dir: { ...L.dir }, len: L.len, launch: LAUNCH, reach: REACH,
-        taps: taps.map((t) => ({ ...t, key: DRINKS[t.i].key, line: DRINKS[t.i].line, rate: DRINKS[t.i].rate })),
+        taps: taps.map((t) => ({ ...t, key: DRINKS[t.i].key })),
         glass: glass ? { state: glass.state, fill: glass.fill, s: glass.s, drink: glass.drink?.key } : null,
         sliding: sliding.map((x) => ({ s: x.s, v: x.v, state: x.state })),
         patrons: seats.filter((x) => x.who?.state === 'wait').map((x) => ({ s: x.s, drink: x.who.drink.key, left: x.who.left })),
-        okPour: POUR_OK,
       };
     },
     slideDistance,
