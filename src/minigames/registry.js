@@ -32,7 +32,7 @@ export const GAMES = [
     how: 'Hold and drag (or use WASD) to walk. Scoop the dishes off dirty tables — up to three tables’ worth — and drop them at the dish pit. Bump into anyone and everything you’re carrying smashes.',
     load: () => import('./games/busser.js'),
   },
-  { key: 'server', type: 'High Altitude Interceptor', title: 'Order Up!', seconds: 90, unit: 'dishes', stars: [5, 11, 16],
+  { key: 'server', type: 'High Altitude Interceptor', title: 'Order Up!', seconds: 180, unit: 'dishes', stars: [5, 11, 16],
     how: 'Tap a table with a ✋ to take their order. It only shows for a moment, so remember it! Punch it into the terminal, then carry the plates from the pass to the table on each ticket. Wrong dishes earn nothing.',
     load: () => import('./games/server.js'),
   },
