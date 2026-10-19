@@ -30,7 +30,7 @@ export const P = {
 export class Surface {
   constructor() { this.m = new Float32Array(N * N); this.t = new Float32Array(N * N); this.clear(); }
   /** Fresh crema; and the moves seen so far (what the judge checks besides the picture). */
-  clear() { this.m.fill(0); this.poured = 0; this.wig = null; this.leaves = 0; this.holds = 0; this.pulls = 0; this.run = null; }
+  clear() { this.fv = null; this.m.fill(0); this.poured = 0; this.wig = null; this.leaves = 0; this.holds = 0; this.pulls = 0; this.run = null; }
   copy() { const s = new Surface(); s.m.set(this.m); s.poured = this.poured; return s; }
 
   /** Foam at a surface point (bilinear), 0 outside the cup. */
@@ -48,7 +48,11 @@ export class Surface {
    */
   pour(dt, su, sv, vu, vv) {
     const m = this.m, t = this.t;
-    const speed = Math.hypot(vu, vv);
+    // The stream thins with the pitcher's smoothed speed (~0.1 s), so a shaky
+    // hand doesn't starve the blob; the drag and the ripples follow the raw motion.
+    const fv = this.fv || (this.fv = { u: vu, v: vv }), kf = Math.min(1, dt / 0.1);
+    fv.u += (vu - fv.u) * kf; fv.v += (vv - fv.v) * kf;
+    const speed = Math.hypot(fv.u, fv.v);
     const q = P.FLOW * Math.max(0.08, 1 - speed / P.THIN) / (2 * Math.PI);
     const inside = su * su + sv * sv < 1;
     const STREAM = P.STREAM, DRAG_R = P.DRAG_R, DRAG = P.DRAG, SHARPEN = P.SHARPEN;
@@ -81,13 +85,14 @@ export class Surface {
     // averages out) isn't mistaken for a pull-through.
     const k = Math.min(1, dt / 0.15), sm = this.sm || (this.sm = { u: 0, v: 0, s: 0 });
     sm.u += (vu - sm.u) * k; sm.v += (vv - sm.v) * k; sm.s += (Math.hypot(vu, vv) - sm.s) * k;
-    const kind = sm.s < 0.6 ? 'hold' : Math.hypot(sm.u, sm.v) > 1.6 ? 'pull' : null;
+    // A hold is judged by net motion (a tremor averages out), not by average speed.
+    const kind = Math.hypot(sm.u, sm.v) < 0.6 ? 'hold' : Math.hypot(sm.u, sm.v) > 1.6 ? 'pull' : null;
     const r = this.run;
     if (r && r.kind === kind) { r.t += dt; if (!r.counted && r.t >= (kind === 'hold' ? 0.3 : 0.14)) { r.counted = true; if (kind === 'hold') this.holds++; else this.pulls++; } }
     else this.run = kind ? { kind, t: dt, counted: false } : null;
   }
   /** Lifting the pitcher ends a move. */
-  lift() { this.run = null; this.sm = null; if (this.wig) this.wig.side = 0; }
+  lift() { this.run = null; this.sm = null; this.fv = null; if (this.wig) this.wig.side = 0; }
 
   /**
    * Wiggling lays rosetta leaves: each time a side-to-side swing turns back,
@@ -144,7 +149,7 @@ export class Surface {
  */
 export const PATTERNS = [
   {
-    key: 'dot', name: 'Monk’s Head', level: 0, needs: { holds: [1, 1], pulls: [0, 0], leaves: [0, 1] },
+    key: 'dot', name: 'Monk’s Head', level: 0, ease: 1, needs: { holds: [1, 2], pulls: [0, 0], leaves: [0, 1] },
     tip: 'Hold still in the middle and let the white circle grow.',
     pour: [
       { say: 'Hold still in the middle…' },
@@ -152,7 +157,7 @@ export const PATTERNS = [
     ],
   },
   {
-    key: 'heart', name: 'Heart', level: 1, needs: { holds: [1, 1], pulls: [1, 1], leaves: [0, 1] },
+    key: 'heart', name: 'Heart', level: 1, ease: 1, needs: { holds: [1, 2], pulls: [1, 1], leaves: [0, 1] },
     tip: 'Grow a circle just above the middle, then pull quickly down through it.',
     pour: [
       { say: 'Grow a circle above the middle…' },
@@ -164,8 +169,8 @@ export const PATTERNS = [
     ],
   },
   {
-    key: 'tulip', name: 'Tulip', level: 2, needs: { holds: [3, 4], pulls: [1, 1], leaves: [0, 1] },
-    tip: 'Pour three blobs, each one pushing the last up, then pull through them all.',
+    key: 'tulip', name: 'Tulip', level: 2, ease: 0.95, needs: { holds: [3, 4], pulls: [1, 1], leaves: [0, 1] },
+    tip: 'Pour a blob near the top, lift, pour the next just below it, and a third below that. Then lift to the top and pull down through all three.',
     pour: [
       { say: 'First blob near the top…' },
       { at: [0, -0.45] }, { hold: [0, -0.45], t: 0.8 },
@@ -178,8 +183,8 @@ export const PATTERNS = [
     ],
   },
   {
-    key: 'rosetta', name: 'Rosetta', level: 3, needs: { holds: [1, 2], pulls: [1, 1], leaves: [4, 99] },
-    tip: 'Start at the top, wiggle side to side while drifting toward you, then pull back up through the middle.',
+    key: 'rosetta', name: 'Rosetta', level: 3, ease: 0.88, bonus: 1, needs: { holds: [1, 2], pulls: [1, 1], leaves: [4, 99] },
+    tip: 'Start at the top, wiggle side to side as you drift toward you, then lift and pull back up the middle.',
     pour: [
       { say: 'Start a little blob at the top…' },
       { at: [0, -0.4] }, { hold: [0, -0.4], t: 0.6 },
@@ -223,7 +228,7 @@ export function timeline(pour) {
 }
 
 /** Simulate a pour (optionally with mistakes) and return the finished surface. */
-export function simulate(pattern, { dt = 1 / 60, jitter = 0, timing = 1, rng = Math.random } = {}) {
+export function simulate(pattern, { dt = 1 / 60, jitter = 0, timing = 1, tremor = 0, rng = Math.random } = {}) {
   const s = new Surface(), tl = timeline(pattern.pour);
   let last = tl.at(0), drift = [0, 0], aim = [0, 0], next = 0;
   for (let t = 0; t < tl.total * timing; t += dt) {
@@ -231,7 +236,9 @@ export function simulate(pattern, { dt = 1 / 60, jitter = 0, timing = 1, rng = M
     // a hand that wanders a little off the line, smoothly (jitter ≈ cup radii × 10)
     if (t >= next) { aim = [(rng() - 0.5) * jitter * 0.2, (rng() - 0.5) * jitter * 0.2]; next = t + 0.3; }
     drift = [drift[0] + (aim[0] - drift[0]) * 0.08, drift[1] + (aim[1] - drift[1]) * 0.08];
-    const u = p.u + drift[0], v = p.v + drift[1];
+    // tremor: a fast shake (≈9 Hz) of `tremor` cup radii, as from a hand on a phone
+    const sh = tremor ? [Math.sin(t * 57 + 1.3) * tremor, Math.sin(t * 61) * tremor] : [0, 0];
+    const u = p.u + drift[0] + sh[0], v = p.v + drift[1] + sh[1];
     const vu = (u - last.u) / dt, vv = (v - last.v) / dt;
     if (p.pouring) s.pour(dt, u, v, vu, vv); else s.lift();
     last = { u, v };
@@ -273,7 +280,31 @@ export function judge(surface, ref, pattern) {
   check(surface.pulls, n.pulls, 'No pull-through', n.pulls[1] ? 'Pulled through more than once' : 'No pull-through on this one');
   check(surface.leaves, n.leaves, 'Wiggle more for the leaves', 'Too wiggly');
   const score = look * Math.pow(0.62, faults.length);
-  return { score, look, faults };
+  return { score, look, faults, notes: faults.length ? [] : lookNotes(surface, ref) };
+}
+
+/** Why a cup with all the right moves still doesn't look like the pattern. */
+function lookNotes(a, ref) {
+  const fa = shape(a), fr = shape(ref), notes = [];
+  if (!fa.n) return ['No foam on the coffee'];
+  const area = fa.n / fr.n;
+  if (area < 0.75) notes.push('Too little foam: hold a bit longer');
+  else if (area > 1.35) notes.push('Too much foam: pour a little less');
+  const off = Math.hypot(fa.cx - fr.cx, fa.cy - fr.cy);
+  if (off > 0.14) notes.push(fa.cy < fr.cy - 0.1 ? 'A bit high: pour closer to the middle' : fa.cy > fr.cy + 0.1 ? 'A bit low: pour closer to the middle' : 'Off to one side: keep it centred');
+  const tall = (fa.h / fa.w) / (fr.h / fr.w);
+  if (tall > 1.3) notes.push('Too tall and thin');
+  else if (tall < 0.75) notes.push('Too wide and squat');
+  return notes;
+}
+function shape(s) {
+  let n = 0, sx = 0, sy = 0, x0 = 1, x1 = -1, y0 = 1, y1 = -1;
+  s.eachCup((k, i, j) => {
+    if (s.m[k] <= 0.5) return;
+    const x = (i + 0.5) / N * 2 - 1, y = (j + 0.5) / N * 2 - 1;
+    n++; sx += x; sy += y; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  });
+  return { n, cx: n ? sx / n : 0, cy: n ? sy / n : 0, w: Math.max(0.05, x1 - x0), h: Math.max(0.05, y1 - y0) };
 }
 
 /** The judge's scale. */
@@ -283,4 +314,5 @@ export const RATINGS = [
   { key: 'poor', name: 'Poor', min: 0.38, pts: 1 },
   { key: 'fail', name: 'Fail', min: -1, pts: 0 },
 ];
-export function rate(score) { return RATINGS.find((r) => score >= r.min); }
+/** Rate a score; harder patterns (lower `ease`) need a little less likeness for each grade. */
+export function rate(score, pattern = null) { const e = pattern?.ease ?? 1; return RATINGS.find((r) => score >= r.min * e); }

@@ -55,9 +55,25 @@ export class MiniGameRunner {
   }
 
   quit() {
-    if (this.phase === 'play' || this.phase === 'count') { sfx.close(); this.intro(); return; }
+    if (this.phase === 'play') { if (this.asking) this.keepPlaying(); else this.askStop(); return; }
+    if (this.phase === 'count') { sfx.close(); this.intro(); return; }
     sfx.close(); this.close();
   }
+
+  /** Mid-shift, stopping throws the run away: check first (the shift waits meanwhile). */
+  askStop() {
+    this.asking = h('div', { class: 'mg-result mg-confirm' },
+      h('div', { class: 'mg-card result' },
+        h('h2', {}, 'Stop this shift?'),
+        h('p', { class: 'mg-how' }, 'This run won’t count towards your stars.'),
+        h('div', { class: 'mg-actions' },
+          h('button', { class: 'btn ghost', onclick: () => { sfx.close(); this.asking = null; this.intro(); } }, 'Stop'),
+          h('button', { class: 'btn', onclick: () => this.keepPlaying() }, 'Keep playing'))));
+    this.playEl.appendChild(this.asking);
+    this.asking.querySelector('.btn:not(.ghost)')?.focus();
+    sfx.click();
+  }
+  keepPlaying() { this.asking?.remove(); this.asking = null; this.last = performance.now(); sfx.click(); }
 
   /* ── intro ────────────────────────────────────────────────────────── */
 
@@ -85,7 +101,7 @@ export class MiniGameRunner {
           h('img', { src: this.face(tier), alt: '' }),
           starRow(open ? tier : 0, tier, 'small'),
           h('b', {}, skin?.name || tierWord(tier)),
-          h('small', {}, open ? 'Unlocked' : `${g.stars[tier - 1]}+ ${g.unit}`));
+          h('small', {}, `${tierWord(tier)} · ${open ? 'unlocked' : `${g.stars[tier - 1]}+ ${g.unit}`}`));
       })),
       h('div', { class: 'mg-actions' },
         h('button', { class: 'btn wide', onclick: () => this.countIn() }, icon('next'), best ? 'Play again' : 'Start the shift'))));
@@ -103,6 +119,7 @@ export class MiniGameRunner {
     clear(this.el);
     this.score = 0;
     this.timeLeft = this.game.seconds;
+    this.frozen = false; this.asking = null;
     this.scoreEl = h('b', {}, '0');
     this.timeEl = h('b', {}, String(this.game.seconds));
     this.barEl = h('i');
@@ -130,6 +147,10 @@ export class MiniGameRunner {
       get score() { return runner.score; },
       add(n = 1) { runner.setScore(runner.score + n); },
       set(n) { runner.setScore(n); },
+      /** Stop (or restart) the shift clock, e.g. while the game shows how something's done. */
+      /** True while the shift is waiting on "Stop this shift?" (ignore keys then). */
+      get paused() { return !!runner.asking; },
+      freeze(on = true) { runner.frozen = !!on; runner.timeEl?.parentElement.classList.toggle('frozen', runner.frozen); },
     };
     this.ctx = ctx;
     this.instance = mod.default(ctx);
@@ -160,7 +181,8 @@ export class MiniGameRunner {
       let dt = (now - this.last) / 1000;
       this.last = now;
       if (dt > 0.5) dt = 0;
-      this.timeLeft = Math.max(0, this.timeLeft - dt);
+      if (this.asking) { this.raf = requestAnimationFrame(loop); return; }   // waiting on "Stop this shift?"
+      if (!this.frozen) this.timeLeft = Math.max(0, this.timeLeft - dt);
       // Games step in small slices so physics stays steady.
       for (let left = dt; left > 1e-6; left -= 0.05) this.instance.update?.(Math.min(0.05, left));
       this.instance.draw?.();
@@ -207,6 +229,9 @@ export class MiniGameRunner {
     card.append(head, starsEl,
       h('div', { class: 'mg-score' }, h('b', {}, String(score)), ` ${g.unit}`),
       h('p', { class: 'mg-how' }, stars < 3 ? `${g.stars[stars]} ${g.unit} for ${stars + 1} star${stars ? 's' : ''}.${score > prevBest && prevBest ? ' New best!' : ''}` : (score > prevBest && prevBest ? 'New best!' : 'Top marks.')));
+    // the game's own rundown of the run (e.g. each cup and how it was judged)
+    const recap = this.instance?.recap?.() || [];
+    if (recap.length) card.appendChild(h('ul', { class: 'mg-recap' }, ...recap.map((r) => h('li', { class: r.tone || '' }, h('span', {}, r.label), h('b', {}, r.value)))));
     // Light the stars one by one.
     [...starsEl.children].forEach((s, i) => { if (i < stars) setTimeout(() => { s.classList.add('on', 'pop'); sfx.star(i); }, 350 + i * 330); });
     if (!stars) sfx.lose();

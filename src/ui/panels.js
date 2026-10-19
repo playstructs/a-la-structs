@@ -176,14 +176,15 @@ function practiceSection(app, s, game) {
   const playable = isPlayable(game);
   const swatch = (tier) => {
     const open = tier <= have;
-    const label = tier ? SKINS[game.outfit][tier - 1].name : 'Standard';
+    const label = tier ? SKINS[game.outfit][tier - 1].name : 'Everyday';
     return h('button', {
       class: `mg-swatch ${wearing === tier ? 'on' : ''}`, disabled: !open, 'aria-pressed': String(wearing === tier),
       title: open ? `Wear ${label}` : `Earn ${tier} star${tier > 1 ? 's' : ''} in ${game.title} to unlock`,
       onclick: () => { sfx.click(); app.wearSkin(game.outfit, tier); },
     },
     h('img', { src: portrait(app.engine.renderer, { species, outfit: outfitAt(game.outfit, tier), seed: s.id }), alt: '' }),
-    h('small', {}, open ? label : `${tierWord(tier)} ${'★'.repeat(tier)}`));
+    // one name everywhere: the uniform's own, with its tier underneath
+    h('small', {}, label), h('small', { class: 'tier' }, tier ? `${tierWord(tier)} ${'★'.repeat(tier)}` : 'Standard'));
   };
   return h('div', { class: 'practice' },
     h('div', { class: 'section-title' }, 'Shift practice'),

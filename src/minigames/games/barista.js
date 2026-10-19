@@ -6,8 +6,10 @@
  * leaves fold in. Serve it (or empty the pitcher) and it's judged against
  * the pattern: Fail 0, Poor 1, Good 2, Perfect 4.
  *
- * Stuck on a pattern (two misses in a row) and the barista shows you how on
- * a fresh cup before you try again; "Show me" plays the demo any time.
+ * Stuck on a pattern (two misses in a row) and the barista offers to show
+ * you how; "Show me" plays the demo any time. The shift clock stops while a
+ * demo plays. Keyboard: arrows move the pitcher (Shift for a quick pull),
+ * hold Space to pour, Enter serves, H shows how.
  *
  * 3D in the restaurant's toon style: the cup on the counter, a steel pitcher
  * under your finger, the barista behind the counter. Tickets, buttons,
@@ -27,7 +29,7 @@ const SCALE = 220;            // view units per metre
 const ELEV = 0.95;            // a steeper look down than the restaurant, to see into the cup
 const COUNTER = 0.55;         // counter height (m): low, so the barista shows over it
 const MILK = 4.6;             // seconds of pouring in a full pitcher
-const NEXT = 1.3;             // seconds before the next customer steps up
+const NEXT = 2.4;             // seconds the verdict shows before the next customer steps up
 
 const CREMA = [161, 98, 48], CREMA_RIM = [112, 62, 30], FOAM = [252, 245, 232];
 
@@ -70,6 +72,11 @@ export default function create(ctx) {
   let demo = null;                            // { tl, t }
   let verdict = null;                         // { rating, faults, t }
   let clock = 0, hint = '';
+  let offer = false;                          // "Want me to show you?" is up on the ticket
+  const seen = new Set();                     // patterns served at least once (first time, the ticket shows the tip)
+  const cups = [];                            // { name, rating, pts } for the results recap
+  const keys = new Set();                     // arrow keys held
+  let kbAim = null, kbUsed = false;
   const TEX = N * 2;            // the picture is drawn at twice the sim's resolution, sampled smoothly
   const texData = new Uint8ClampedArray(TEX * TEX * 4);
   let dirty = true;
@@ -83,7 +90,10 @@ export default function create(ctx) {
     L.cupR = P ? Math.min(W * 0.36, H * 0.2) : Math.min(H * 0.3, W * 0.22);
     L.cup = P ? { x: W / 2, y: H * 0.56 } : { x: Math.max(W * 0.56, 190 + L.cupR * 1.4), y: H * 0.58 };
     L.farY = P ? H * 0.34 : H * 0.36;                 // the counter's back edge on screen
-    L.ticket = P ? { x: 14, y: 14, w: W - 28, h: 84 } : { x: W - 262, y: 12, w: 248, h: 86 };
+    L.ticket = P ? { x: 14, y: 14, w: W - 28, h: 104 } : { x: W - 270, y: 12, w: 256, h: 108 };
+    const T = L.ticket;
+    L.offerWatch = { x: T.x + T.w - 168, y: T.y + T.h - 32, w: 84, h: 26 };
+    L.offerSkip = { x: T.x + T.w - 78, y: T.y + T.h - 32, w: 68, h: 26 };
     L.serve = P ? { x: W / 2 + 6, y: H - 70, w: W / 2 - 20, h: 52 } : { x: 18, y: H - 70, w: 156, h: 52 };
     L.show = P ? { x: 14, y: H - 70, w: W / 2 - 20, h: 52 } : { x: 18, y: H - 128, w: 156, h: 46 };
     L.meter = P ? { x: 14, y: H - 96, w: W - 28, h: 12 } : { x: 18, y: H - 154, w: 156, h: 12 };
@@ -123,16 +133,20 @@ export default function create(ctx) {
     order = { pattern, who, t: 0 };
     refFor(pattern);
     freshCup();
-    // stuck on this one? show how first
-    if ((misses.get(pattern.key) || 0) >= 2) { misses.set(pattern.key, 0); startDemo(true); } else state = 'pour';
-    ctx.sfx.work('espresso', { dur: 0.6, vol: 0.4 });
+    // stuck on this one? offer to show how (it's the player's call)
+    offer = (misses.get(pattern.key) || 0) >= 2;
+    if (offer) misses.set(pattern.key, 0);
+    state = 'pour';
+    hint = `New order: ${pattern.name}`;
+    ctx.sfx.pop(); ctx.sfx.work('espresso', { dur: 0.6, vol: 0.4 });
   }
   function freshCup() { surface.clear(); milk = MILK; dirty = true; verdict = null; }
 
   /* ── pouring ────────────────────────────────────────────────────────── */
   function beginPour(p) {
     if (state !== 'pour' || milk <= 0) return;
-    pouring = true; aim = pitcherPoint(p); spout = toSurface(aim); lastSpout = spout;
+    pouring = true; offer = false; hint = '';
+    aim = pitcherPoint(p); spout = toSurface(aim); lastSpout = spout;
     barista?.loop('pour');
     ctx.sfx.work('pour', { dur: 0.6, vol: 0.35 });
   }
@@ -149,19 +163,25 @@ export default function create(ctx) {
     if (state !== 'pour' || !order) return;
     if (surface.poured < 0.15) { pops.add('Pour some milk first', L.cup.x, L.cup.y - L.cupR - 20, C.muted, 15); return; }
     pouring = false; surface.lift();
-    const res = judge(surface, refFor(order.pattern), order.pattern), rating = rate(res.score);
-    verdict = { rating, faults: res.faults, t: 0 };
-    state = 'judged';
+    const pat = order.pattern;
+    const res = judge(surface, refFor(pat), pat), rating = rate(res.score, pat);
+    const bonus = pat.bonus && (rating.key === 'good' || rating.key === 'perfect') ? pat.bonus : 0;
+    const pts = rating.pts + bonus;
+    const reason = res.faults[0] || res.notes[0] || (rating.key === 'perfect' ? 'Beautiful!' : rating.key === 'good' ? 'Close: just tidy the shape' : `Doesn’t look like a ${pat.name.toLowerCase()} yet`);
+    verdict = { rating, pts, bonus, reason, mine: surface.copy(), t: 0 };
+    state = 'judged'; offer = false;
     served++;
-    ctx.add(rating.pts);
-    const key = order.pattern.key;
+    ctx.add(pts);
+    cups.push({ name: pat.name, rating, pts });
+    seen.add(pat.key);
+    const key = pat.key;
     if (rating.key === 'fail' || rating.key === 'poor') { misses.set(key, (misses.get(key) || 0) + 1); struggled.add(key); } else misses.set(key, 0);
     const tone = rating.key === 'perfect' ? C.leafD : rating.key === 'good' ? C.seaD : C.berryD;
-    pops.add(`${rating.name}${rating.pts ? ` +${rating.pts}` : ''}`, L.cup.x, L.cup.y - L.cupR * 0.9, tone, 24);
+    pops.add(`${rating.name}${pts ? ` +${pts}` : ''}`, L.cup.x, L.cup.y - L.cupR * 0.9, tone, 24);
     if (rating.key === 'perfect') { ctx.sfx.good(4); ctx.sfx.serve(); barista?.play('cheer', 1.2); }
     else if (rating.key === 'good') { ctx.sfx.good(2); ctx.sfx.serve(); barista?.hop(0.6); }
     else { ctx.sfx.miss(); barista?.wobble(0.8); }
-    nextT = NEXT + 0.6;
+    nextT = NEXT;
   }
 
   /* ── the demo: the barista pours it for you on a fresh cup ─────────── */
@@ -170,8 +190,9 @@ export default function create(ctx) {
     freshCup();
     pouring = false;
     demo = { tl: timeline(order.pattern.pour), t: -0.6, auto, last: null };
-    state = 'demo';
+    state = 'demo'; offer = false;
     hint = auto ? 'Let me show you how…' : '';
+    ctx.freeze?.(true);   // learning costs no time
   }
   function stepDemo(dt) {
     demo.t += dt;
@@ -179,6 +200,7 @@ export default function create(ctx) {
     if (demo.t < 0) return;
     if (demo.t > tl.total + 1.4) {          // done: wipe it and hand over
       demo = null; freshCup(); state = 'pour'; hint = 'Your turn!';
+      ctx.freeze?.(false);
       return;
     }
     const p = tl.at(Math.min(demo.t, tl.total));
@@ -199,18 +221,33 @@ export default function create(ctx) {
       if (ctx.over) return;
       if (inRect(p, L.serve)) { serve(); return; }
       if (inRect(p, L.show)) { if (state === 'pour') startDemo(false); return; }
+      if (offer && inRect(p, L.offerWatch)) { startDemo(true); return; }
+      if (offer && inRect(p, L.offerSkip)) { offer = false; ctx.sfx.click(); return; }
       if (state !== 'pour') return;
       downOnCup = true;
       beginPour(p);
     },
-    move: (p) => { if (downOnCup && pouring) aim = pitcherPoint(p); else if (state === 'pour') aim = pitcherPoint(p); },
+    move: (p) => { if (state === 'pour') { aim = pitcherPoint(p); kbAim = null; } },
     up: () => { downOnCup = false; endPour(); },
   });
+  const ARROWS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   const onKey = (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); serve(); }
-    if (e.key.toLowerCase() === 'h') { e.preventDefault(); if (state === 'pour') startDemo(false); }
+    if (ctx.over || ctx.paused) return;
+    if (ARROWS[e.key]) { e.preventDefault(); keys.add(e.key); kbUsed = true; if (!kbAim) kbAim = aim ? { ...aim } : { x: L.cup.x, y: L.cup.y }; aim = kbAim; return; }
+    if (e.key === ' ') { e.preventDefault(); if (!e.repeat && state === 'pour') { kbUsed = true; if (!kbAim) kbAim = aim ? { ...aim } : { x: L.cup.x, y: L.cup.y }; beginPour(kbAim); } return; }
+    if (e.key === 'Enter') { e.preventDefault(); serve(); return; }
+    if (e.key.toLowerCase() === 'h') { e.preventDefault(); if (state === 'pour') startDemo(offer); }
   };
+  const onKeyUp = (e) => {
+    if (ARROWS[e.key]) keys.delete(e.key);
+    if (e.key === ' ') endPour();
+  };
+  let shiftHeld = false;
+  const onShift = (e) => { shiftHeld = e.shiftKey; };
   window.addEventListener('keydown', onKey);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('keydown', onShift);
+  window.addEventListener('keyup', onShift);
 
   /* ── update ─────────────────────────────────────────────────────────── */
   function step(dt) {
@@ -222,6 +259,15 @@ export default function create(ctx) {
     }
     if (order) order.t += dt;
     if (state === 'demo') stepDemo(dt);
+    // keyboard: the arrows move the pitcher; Shift moves it fast enough for a pull-through
+    if (state === 'pour' && keys.size && kbAim) {
+      let dx = 0, dy = 0;
+      for (const k of keys) { dx += ARROWS[k][0]; dy += ARROWS[k][1]; }
+      const len = Math.hypot(dx, dy) || 1, sp = L.cupR * (shiftHeld ? 3.6 : 1.1) * dt;
+      kbAim.x = clamp(kbAim.x + dx / len * sp, L.cup.x - L.cupR * 1.05, L.cup.x + L.cupR * 1.05);
+      kbAim.y = clamp(kbAim.y + dy / len * sp, L.cup.y - L.cupR * 1.05, L.cup.y + L.cupR * 1.05);
+      aim = kbAim;
+    }
     if (state === 'pour' && pouring && aim) {
       const sp = toSurface(aim);
       const vu = (sp.u - lastSpout.u) / dt, vv = (sp.v - lastSpout.v) / dt;
@@ -333,17 +379,39 @@ export default function create(ctx) {
     /* overlay */
     s3.begin2d();
     const P = L.portrait;
-    // the order ticket: who, what, and what it should look like
+    // the order ticket: who, what, and what it should look like — or, just after
+    // serving, the verdict: your cup beside the target, the grade and why
     if (order) {
       const T = L.ticket;
-      box(g, T.x, T.y, T.w, T.h, { fill: '#fffaf0', stroke: C.line, r: 14, shadow: 4 });
-      const tr = T.h / 2 - 9;
-      drawThumb(refFor(order.pattern), T.x + 9 + tr, T.y + T.h / 2, tr);
-      const tx = T.x + tr * 2 + 26, img = faceImg(order.who);
-      if (img.complete) { g.save(); rr(g, tx, T.y + 8, 30, 30, 15); g.clip(); g.drawImage(img, tx, T.y + 8, 30, 30); g.restore(); }
-      text(g, 'would like a', tx + 38, T.y + 23, { size: 11, color: C.muted, weight: 800, align: 'left' });
-      text(g, order.pattern.name, tx, T.y + 54, { size: 18, color: C.ink, weight: 800, align: 'left' });
-      if (struggled.has(order.pattern.key)) wrapText(order.pattern.tip, tx, T.y + 72, T.x + T.w - tx - 8, 12);
+      const slide = ease(clamp(order.t / 0.35, 0, 1));                 // a new order slides in
+      g.save(); g.translate((1 - slide) * (T.w + 30), 0);
+      box(g, T.x, T.y, T.w, T.h, { fill: '#fffaf0', stroke: verdict ? toneOf(verdict.rating) : C.line, r: 14, shadow: 4, lw: verdict ? 3 : 2 });
+      const tr = Math.min(36, T.h / 2 - 14);
+      if (verdict && state === 'judged') {
+        const vr = Math.min(28, tr), ox = T.x + 2 * vr + 26 + vr * 0.7;
+        drawThumb(verdict.mine, T.x + 10 + vr, T.y + 14 + vr, vr);
+        drawThumb(refFor(order.pattern), ox, T.y + 14 + vr, vr * 0.7);
+        text(g, 'yours', T.x + 10 + vr, T.y + 2 * vr + 30, { size: 10, color: C.muted, weight: 800 });
+        text(g, 'order', ox, T.y + 2 * vr + 30, { size: 10, color: C.muted, weight: 800 });
+        const tx = ox + vr * 0.7 + 12;
+        text(g, `${verdict.rating.name}${verdict.pts ? `  +${verdict.pts}` : ''}`, tx, T.y + 28, { size: 19, color: toneOf(verdict.rating), weight: 800, align: 'left' });
+        if (verdict.bonus) text(g, `incl. +${verdict.bonus} ${order.pattern.name} bonus`, tx, T.y + 46, { size: 10.5, color: C.muted, weight: 800, align: 'left' });
+        wrapText(verdict.reason, tx, T.y + (verdict.bonus ? 64 : 52), T.x + T.w - tx - 8, 13, 3, 12, C.ink);
+      } else {
+        drawThumb(refFor(order.pattern), T.x + 10 + tr, T.y + 12 + tr, tr);
+        const tx = T.x + tr * 2 + 24, img = faceImg(order.who);
+        if (img.complete) { g.save(); rr(g, tx, T.y + 8, 28, 28, 14); g.clip(); g.drawImage(img, tx, T.y + 8, 28, 28); g.restore(); }
+        text(g, 'would like a', tx + 35, T.y + 22, { size: 11, color: C.muted, weight: 800, align: 'left' });
+        text(g, order.pattern.name, tx, T.y + 50, { size: 18, color: C.ink, weight: 800, align: 'left' });
+        if (offer) {
+          text(g, 'Stuck? Want me to show you?', tx, T.y + 66, { size: 11, color: C.seaD, weight: 800, align: 'left' });
+          smallButton(L.offerWatch, 'Watch', C.sea, C.seaD, '#fff');
+          smallButton(L.offerSkip, 'Skip', '#fff', C.line, C.muted);
+        } else if (!seen.has(order.pattern.key) || struggled.has(order.pattern.key)) {
+          wrapText(order.pattern.tip, tx, T.y + 68, T.x + T.w - tx - 8, 12, 3);
+        }
+      }
+      g.restore();
     }
     // the demo's captions
     if (state === 'demo' && demo) {
@@ -363,8 +431,8 @@ export default function create(ctx) {
     const canServe = state === 'pour' && surface.poured >= 0.15;
     button(L.serve, 'Serve', canServe ? C.leaf : '#d8cbbb', canServe ? C.leafD : '#bfae98', '#fff');
     button(L.show, 'Show me', state === 'pour' ? '#fff' : '#f2ebe0', C.line, state === 'pour' ? C.seaD : C.muted);
-    // the verdict
-    if (verdict && verdict.faults.length && verdict.t < NEXT + 0.6) text(g, verdict.faults[0], L.cup.x, L.cup.y + L.cupR * 0.95 + 26, { size: 14, color: C.berryD, weight: 800, stroke: '#fff' });
+    // keyboard players get the keys spelled out
+    if (!P) text(g, kbUsed ? 'Arrows move · Shift + arrow = quick pull · hold Space to pour · Enter serves · H shows how' : 'Keyboard: arrows move, hold Space to pour, Enter serves, H shows how', view.W / 2 + 80, view.H - 10, { size: 11, color: C.muted, weight: 700, stroke: '#fff' });
     pops.draw(g);
     // first-time hint
     if (ctx.elapsed() < 7 && state === 'pour' && surface.poured < 0.2 && !hint) {
@@ -372,6 +440,11 @@ export default function create(ctx) {
     }
   }
 
+  function toneOf(r) { return r.key === 'perfect' ? C.leafD : r.key === 'good' ? C.seaD : C.berryD; }
+  function smallButton(r, label, fill, edge, ink) {
+    box(g, r.x, r.y, r.w, r.h, { fill, stroke: edge, r: r.h / 2, lw: 2 });
+    text(g, label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 13, color: ink, weight: 800 });
+  }
   function button(r, label, fill, edge, ink) {
     box(g, r.x, r.y, r.w, r.h, { fill, stroke: edge, r: r.h / 2, lw: 3, shadow: 4 });
     text(g, label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 17, color: ink, weight: 800 });
@@ -382,12 +455,15 @@ export default function create(ctx) {
     box(g, clamp(x - w / 2, 10, view.W - w - 10), y - 15, w, 30, { fill: '#fffaf0', stroke: color, r: 15, lw: 2 });
     text(g, msg, clamp(x, w / 2 + 10, view.W - w / 2 - 10), y, { size: 14, color, weight: 800 });
   }
-  function wrapText(str, x, y, w, lh) {
-    g.save(); g.font = '700 10.5px Nunito, system-ui, sans-serif';
-    const words = str.split(' '); let line = '', yy = y;
-    for (const wd of words) { const t = line ? line + ' ' + wd : wd; if (g.measureText(t).width > w && line) { text(g, line, x, yy, { size: 10.5, color: C.muted, weight: 700, align: 'left' }); line = wd; yy += lh; } else line = t; }
-    if (line) text(g, line, x, yy, { size: 10.5, color: C.muted, weight: 700, align: 'left' });
+  /** Wrapped text that stays inside its box: at most `lines` lines, the last one cut with "…". */
+  function wrapText(str, x, y, w, lh, lines = 2, size = 10.5, color = C.muted) {
+    g.save(); g.font = `700 ${size}px Nunito, system-ui, sans-serif`;
+    const out = []; let line = '';
+    for (const wd of str.split(' ')) { const t = line ? line + ' ' + wd : wd; if (g.measureText(t).width > w && line) { out.push(line); line = wd; } else line = t; }
+    if (line) out.push(line);
+    if (out.length > lines) { out.length = lines; let last = out[lines - 1]; while (last && g.measureText(last + '…').width > w) last = last.slice(0, -1); out[lines - 1] = last.replace(/[\s,.;:]+$/, '') + '…'; }
     g.restore();
+    out.forEach((l, i) => text(g, l, x, y + i * lh, { size, color, weight: 700, align: 'left' }));
   }
   /** A little picture of what the pattern should look like. */
   const thumbs = new Map();
@@ -413,15 +489,21 @@ export default function create(ctx) {
   return {
     update(dt) { if (!ctx.over) step(dt); else pops.update(dt); },
     draw,
-    end() { pouring = false; },
+    end() { pouring = false; ctx.freeze?.(false); },
     /** For automated play-tests. */
     peek() {
       return {
-        view: { ...view }, L, state, milk, served, pattern: order?.pattern.key,
+        view: { ...view }, L, state, milk, served, pattern: order?.pattern.key, offer,
         cupView: (u, v) => (cupWorld ? toView(u, v) : null),
         pour: order ? order.pattern.pour : null, verdict: verdict && { rating: verdict.rating.key, faults: verdict.faults },
       };
     },
-    destroy() { offPointer(); window.removeEventListener('keydown', onKey); s3.destroy(); },
+    /** Each cup this shift, for the results card. */
+    recap() { return cups.map((c) => ({ label: c.name, value: `${c.rating.name.replace('!', '')}${c.pts ? ` +${c.pts}` : ''}`, tone: c.rating.key === 'perfect' ? 'good' : c.rating.key === 'good' ? 'ok' : 'bad' })); },
+    destroy() {
+      offPointer(); ctx.freeze?.(false);
+      for (const [ev, fn] of [['keydown', onKey], ['keyup', onKeyUp], ['keydown', onShift], ['keyup', onShift]]) window.removeEventListener(ev, fn);
+      s3.destroy();
+    },
   };
 }

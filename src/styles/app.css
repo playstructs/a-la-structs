@@ -677,3 +677,12 @@ ul.rules { margin: 0; padding-left: 1.2em; color: #6d5646; font-size: .9rem; dis
   .mg-title { font-size: 1rem; }
   .mg-pill { font-size: 1rem; padding: 4px 9px; }
 }
+.mg-pill.frozen { background: #e3f1fb; color: var(--sea-d); }
+.mg-confirm { z-index: 5; background: rgba(74, 52, 40, .35); }
+.mg-recap { list-style: none; margin: 0; padding: 8px 10px; background: #fff; border-radius: 14px; display: flex; flex-direction: column; gap: 4px; max-height: 170px; overflow-y: auto; text-align: left; box-shadow: 0 3px 0 var(--line); }
+.mg-recap li { display: flex; justify-content: space-between; gap: 10px; font-size: .88rem; color: #6d5646; }
+.mg-recap li b { font-family: var(--display); }
+.mg-recap li.good b { color: var(--good); }
+.mg-recap li.ok b { color: var(--sea-d); }
+.mg-recap li.bad b { color: var(--bad); }
+.mg-swatch small.tier { font-size: .62rem; color: var(--muted); font-weight: 800; }

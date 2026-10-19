@@ -41,7 +41,7 @@ export const GAMES = [
     load: () => import('./games/dishwasher.js'),
   },
   { key: 'barista', type: 'Starfighter', title: 'Latte Art', seconds: 90, unit: 'points', stars: [12, 26, 42],
-    how: 'Hold on the cup to pour the milk and move to draw the pattern each customer asks for, then Serve. Judged Fail, Poor, Good or Perfect for 0, 1, 2 or 4 points. Stuck? Tap Show me and the barista pours one for you.',
+    how: 'Hold on the cup to pour the milk and move to draw the pattern each customer asks for, then Serve. Judged Fail, Poor, Good or Perfect for 0, 1, 2 or 4 points (a good Rosetta earns 1 more). Stuck? Tap Show me and the barista pours one for you; the clock stops while you watch. Keyboard: arrows move, hold Space to pour, Enter serves, H shows how.',
     load: () => import('./games/barista.js'),
   },
   { key: 'cashier', type: 'Frigate', title: 'Exact Change', seconds: 75, unit: 'customers', stars: [4, 8, 12],
