@@ -1,684 +1,425 @@
 /**
- * Barista — "Pull the Shot". Order tickets line up across the top; build a
- * drink by tapping the stations in the order its recipe calls for, then
- * serve it. A step that doesn't belong in any waiting drink sends the cup
- * down the drain. Espresso shots take a moment to pull and milk a moment to
- * steam. New drinks show their recipe until you've made them once; after
- * that the Recipes button brings the cards back (it takes a second to read).
- * Orders that wait too long leave. Score = drinks served.
+ * Barista — "Latte Art". Customers ask for a pattern (monk's head, heart,
+ * tulip, rosetta); hold to pour steamed milk and move the pitcher to draw it
+ * on the espresso. The milk really flows (latteSim.js): hold still and a
+ * white blob grows, pull through quickly and it draws to a point, wiggle and
+ * leaves fold in. Serve it (or empty the pitcher) and it's judged against
+ * the pattern: Fail 0, Poor 1, Good 2, Perfect 4.
  *
- * Drawn in the restaurant's 3D toon style: a coffee bar counter with the
- * stations' kit on it, a big glass mug that fills in layers in front of the
- * espresso machine, and the barista behind the counter. Tickets, labels and
- * buttons are the 2D overlay (with little pictures of the 3D models).
+ * Stuck on a pattern (two misses in a row) and the barista shows you how on
+ * a fresh cup before you try again; "Show me" plays the demo any time.
+ *
+ * 3D in the restaurant's toon style: the cup on the counter, a steel pitcher
+ * under your finger, the barista behind the counter. Tickets, buttons,
+ * captions and the milk meter are the 2D overlay.
  */
 import { pointer, C, box, circle, text, rr, lerp, ease, clamp, inRect, pick, Pops } from '../kit.js';
 import { stage3d } from '../kit3d.js';
-import { model, defineModel, icon, sign } from '../models.js';
+import { defineModel, model } from '../models.js';
 import * as THREE from 'three';
 import { toonMat } from '../../three/toon.js';
-import { espresso as espressoProp } from '../../three/props.js';
+import { portrait } from '../../three/portraits.js';
+import { SPECIES } from '../../lexicon/names.js';
+import { casualOutfit } from '../../three/outfits.js';
+import { N, Surface, PATTERNS, PATTERN, timeline, simulate, judge, rate } from './latteSim.js';
 
-const ING = {
-  shot:    { name: 'Espresso', short: 'Shot', color: '#4a2a17', h: 15, busy: 0.9, sound: 'espresso' },
-  water:   { name: 'Hot water', short: 'Water', color: '#b07d52', h: 26, sound: 'pour' },
-  milk:    { name: 'Steamed milk', short: 'Steamed', color: '#f1dfc2', h: 22, busy: 0.45, sound: 'sizzle' },
-  foam:    { name: 'Foam', short: 'Foam', color: '#fffaf2', h: 13, sound: 'whoosh' },
-  cold:    { name: 'Cold milk', short: 'Cold milk', color: '#eef3f7', h: 24, sound: 'pour' },
-  ice:     { name: 'Ice', short: 'Ice', color: '#d6eefa', h: 20, sound: 'glass' },
-  choc:    { name: 'Chocolate', short: 'Choc', color: '#5b3426', h: 10, sound: 'pour' },
-  vanilla: { name: 'Vanilla syrup', short: 'Vanilla', color: '#f2dc9a', h: 9, sound: 'pour' },
-  caramel: { name: 'Caramel', short: 'Caramel', color: '#d48a2c', h: 6, sound: 'pour' },
-  cream:   { name: 'Whipped cream', short: 'Cream', color: '#ffffff', h: 16, sound: 'whoosh' },
-};
-const STATIONS = ['shot', 'water', 'milk', 'foam', 'cold', 'ice', 'choc', 'vanilla', 'caramel', 'cream'];
+const SCALE = 220;            // view units per metre
+const ELEV = 0.95;            // a steeper look down than the restaurant, to see into the cup
+const COUNTER = 0.55;         // counter height (m): low, so the barista shows over it
+const MILK = 4.6;             // seconds of pouring in a full pitcher
+const NEXT = 1.3;             // seconds before the next customer steps up
 
-const DRINKS = [
-  { name: 'Espresso', recipe: ['shot'], at: 0 },
-  { name: 'Americano', recipe: ['shot', 'water'], at: 0 },
-  { name: 'Cortado', recipe: ['shot', 'milk'], at: 0 },
-  { name: 'Latte', recipe: ['shot', 'milk', 'milk', 'foam'], at: 0 },
-  { name: 'Doppio', recipe: ['shot', 'shot'], at: 9 },
-  { name: 'Macchiato', recipe: ['shot', 'foam'], at: 9 },
-  { name: 'Cappuccino', recipe: ['shot', 'milk', 'foam', 'foam'], at: 9 },
-  { name: 'Mocha', recipe: ['choc', 'shot', 'milk', 'cream'], at: 20 },
-  { name: 'Iced Latte', recipe: ['ice', 'shot', 'cold'], iced: true, at: 20 },
-  { name: 'Flat White', recipe: ['shot', 'shot', 'milk'], at: 20 },
-  { name: 'Long Black', recipe: ['water', 'shot'], at: 32 },
-  { name: 'Vanilla Latte', recipe: ['vanilla', 'shot', 'milk', 'foam'], at: 32 },
-  { name: 'Caramel Macchiato', recipe: ['vanilla', 'milk', 'shot', 'caramel'], at: 32 },
-  { name: 'Iced Mocha', recipe: ['ice', 'choc', 'shot', 'cold', 'cream'], iced: true, at: 42 },
-];
-const MAX_ORDERS = 3;
-const HINT_SHOW = 4;      // seconds the recipe cards stay up
-const HINT_READ = 0.9;    // seconds the stations wait while you read them
+const CREMA = [161, 98, 48], CREMA_RIM = [112, 62, 30], FOAM = [252, 245, 232];
 
-const SCALE = 150;        // view units per metre
-const TOP = 0.72;         // counter height (m): low, so the barista shows over it
-
-/* ── models: the stations' kit (also the pictures on the tickets) ───────── */
-const STEEL = '#c9d3da', STEEL_D = '#8e9ba8', INK = '#3b2f2f', W = '#fbfaf5';
-const bottle = (b, glass, label, cap) => {
-  b.cyl(0.05, 0.05, 0.2, glass, { y: 0.1 });
-  b.cyl(0.05, 0.03, 0.04, glass, { y: 0.22 });
-  b.cyl(0.051, 0.051, 0.07, label, { y: 0.1 });
-  b.cyl(0.018, 0.018, 0.05, cap, { y: 0.26 });
-  b.flat(0.012, 0.035, 0.012, cap, { y: 0.3 });
-  b.flat(0.05, 0.012, 0.014, cap, { x: 0.02, y: 0.315 });
-};
-const MODELS = {
-  /** A little espresso machine with a shot glass under the group head. */
-  shot(b) {
-    b.box(0.22, 0.2, 0.16, '#b23a48', { y: 0.12 }, 0.03);
-    b.box(0.23, 0.025, 0.17, STEEL, { y: 0.23 }, 0.008);
-    b.flat(0.2, 0.02, 0.07, STEEL_D, { y: 0.01, z: 0.11 });
-    b.cyl(0.025, 0.025, 0.035, STEEL_D, { y: 0.115, z: 0.09 });
-    b.flat(0.025, 0.018, 0.08, INK, { x: 0.04, y: 0.105, z: 0.12, ry: -0.5 });
-    b.cyl(0.028, 0.022, 0.045, W, { y: 0.045, z: 0.12 });
-    b.cyl(0.024, 0.024, 0.005, '#4a2a17', { y: 0.066, z: 0.12 });
-    b.sphere(0.022, '#ffd66b', { x: -0.07, y: 0.17, z: 0.08, sz: 0.4 });
-  },
-  /** Kettle for hot water. */
-  water(b) {
-    b.sphere(0.1, '#4fbfa8', { y: 0.09, sy: 0.85 });
-    b.cyl(0.07, 0.08, 0.02, '#3b9f8a', { y: 0.01 });
-    b.cone(0.025, 0.1, '#4fbfa8', { x: 0.11, y: 0.12, rz: -1.0 }, 8);
-    b.torus(0.06, 0.012, INK, { y: 0.19, rx: 0 }, Math.PI);
-    b.sphere(0.02, INK, { y: 0.18 });
-  },
-  /** Steel milk jug, steaming. */
-  milk(b) {
-    b.cyl(0.065, 0.075, 0.16, STEEL, { y: 0.08 });
-    b.cone(0.03, 0.05, STEEL, { x: 0.065, y: 0.155, rz: -1.2 }, 6);
-    b.torus(0.04, 0.011, STEEL_D, { x: -0.08, y: 0.09, rz: Math.PI / 2 }, Math.PI);
-    b.flat(0.13, 0.012, 0.012, '#e85d75', { y: 0.06, z: 0.072 });
-    for (let i = 0; i < 3; i++) b.sphere(0.03 - i * 0.004, '#ffffff', { x: -0.02 + i * 0.025, y: 0.2 + i * 0.04 });
-  },
-  /** A dome of milk foam in a little bowl. */
-  foam(b) {
-    b.cyl(0.09, 0.06, 0.07, '#f2c6a8', { y: 0.035 });
-    b.sphere(0.085, '#fffaf2', { y: 0.075, sy: 0.75 });
-    for (let i = 0; i < 6; i++) b.sphere(0.03, '#fffdf8', { x: Math.cos(i) * 0.06, y: 0.09, z: Math.sin(i) * 0.06 });
-    b.sphere(0.035, '#ffffff', { y: 0.14 });
-  },
-  /** Milk carton, cold from the fridge. */
-  cold(b) {
-    b.box(0.1, 0.17, 0.1, '#ffffff', { y: 0.085 }, 0.008);
-    b.flat(0.102, 0.06, 0.102, '#5aa9e6', { y: 0.07 });
-    b.geom(new THREE.CylinderGeometry(0, 0.072, 0.06, 4, 1), '#ffffff', { y: 0.2, ry: Math.PI / 4 });
-    b.flat(0.07, 0.03, 0.02, '#ffffff', { y: 0.24 });
-    b.sphere(0.018, '#5aa9e6', { y: 0.12, z: 0.051, sz: 0.3 });
-  },
-  /** Ice bucket full of cubes. */
-  ice(b) {
-    b.cyl(0.11, 0.085, 0.13, '#7cc6f2', { y: 0.065 });
-    b.torus(0.105, 0.01, STEEL_D, { y: 0.13, rx: Math.PI / 2 });
-    for (let i = 0; i < 6; i++) b.box(0.05, 0.05, 0.05, '#e9f7ff', { x: Math.cos(i * 1.1) * 0.05, y: 0.13 + (i % 2) * 0.02, z: Math.sin(i * 1.1) * 0.05, ry: i, rx: i * 0.4 }, 0.01);
-  },
-  /** A bar of chocolate leaning on a little pot of sauce. */
-  choc(b) {
-    b.cyl(0.07, 0.06, 0.08, '#e9e2d6', { y: 0.04 });
-    b.cyl(0.062, 0.062, 0.01, '#5b3426', { y: 0.08 });
-    b.box(0.13, 0.2, 0.025, '#6b3d2a', { x: 0.03, y: 0.1, z: 0.07, rx: -0.2, rz: -0.15 }, 0.006);
-    for (let i = 0; i < 3; i++) b.flat(0.13, 0.008, 0.03, '#4d2a1c', { x: 0.03, y: 0.05 + i * 0.05, z: 0.075, rx: -0.2, rz: -0.15 });
-    b.flat(0.135, 0.08, 0.028, '#e8505b', { x: 0.03, y: 0.05, z: 0.072, rx: -0.2, rz: -0.15 });
-  },
-  vanilla(b) { bottle(b, '#f2dc9a', '#fff7e0', '#5c6670'); b.sphere(0.02, '#ffffff', { y: 0.1, z: 0.05, sz: 0.3 }); },
-  caramel(b) { bottle(b, '#d48a2c', '#fff1d6', '#5c6670'); b.sphere(0.02, '#a8641c', { y: 0.1, z: 0.05, sz: 0.3 }); },
-  /** Whipped cream can. */
-  cream(b) {
-    b.cyl(0.045, 0.045, 0.2, '#e8505b', { y: 0.1 });
-    b.cyl(0.046, 0.046, 0.06, '#ffffff', { y: 0.12 });
-    b.sphere(0.045, '#d9dee3', { y: 0.2, sy: 0.5 });
-    b.cone(0.016, 0.06, '#ffffff', { y: 0.25, rx: 0.4, z: 0.01 }, 6);
-  },
-  /** Finished drinks for the tickets: a mug of coffee, or an iced glass with a straw. */
-  drink(b, o) {
-    if (o.iced) {
-      b.cyl(0.05, 0.04, 0.15, '#cfe9f7', { y: 0.075 });
-      b.cyl(0.046, 0.038, 0.12, o.fill || '#b98a62', { y: 0.065 });
-      b.box(0.03, 0.03, 0.03, '#ffffff', { x: -0.015, y: 0.14, ry: 0.5 }, 0.006);
-      b.flat(0.012, 0.16, 0.012, '#e85d75', { x: 0.02, y: 0.17, rz: -0.2 });
-    } else {
-      b.cyl(0.11, 0.1, 0.012, W, { y: 0.006 });
-      b.cyl(0.06, 0.048, 0.1, W, { y: 0.06 });
-      b.torus(0.03, 0.01, W, { x: 0.065, y: 0.065, ry: Math.PI / 2 });
-      b.cyl(0.056, 0.056, 0.01, o.fill || '#8a5a3c', { y: 0.106 });
-      b.sphere(0.02, '#fffaf2', { y: 0.11, sy: 0.25 });
-    }
-  },
-  /** Counter bell for "Serve". */
-  bell(b) {
-    b.cyl(0.08, 0.09, 0.02, '#5c6670', { y: 0.01 });
-    b.geom(new THREE.SphereGeometry(0.07, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), '#ffd23f', { y: 0.02 });
-    b.cyl(0.008, 0.008, 0.03, '#5c6670', { y: 0.1 });
-    b.sphere(0.014, '#5c6670', { y: 0.12 });
-  },
-  /** A mug tipping out, for "Tip out". */
-  tip(b) {
-    b.cyl(0.05, 0.04, 0.1, W, { y: 0.06, rz: 1.1, x: -0.02 });
-    b.sphere(0.04, '#8a5a3c', { x: 0.07, y: 0.02, sy: 0.25, sx: 1.6 });
-    b.cyl(0.06, 0.05, 0.03, '#9aa7b1', { x: 0.07, y: 0.0 });
-  },
-  /** A wall shelf of mugs and jars of beans. */
-  shelf(b) {
-    b.box(2.2, 0.05, 0.22, '#9c6a3f', { y: 0 }, 0.01);
-    for (const x of [-0.95, 0.95]) b.flat(0.04, 0.14, 0.18, '#7a5032', { x, y: -0.08 });
-    const mugs = ['#e85d75', '#4fbfa8', '#ffd66b', '#b18cf2', '#5aa9e6', '#fbfaf5'];
-    for (let i = 0; i < 6; i++) { const x = -0.85 + i * 0.22; b.cyl(0.06, 0.05, 0.12, mugs[i], { x, y: 0.085 }); b.torus(0.03, 0.01, mugs[i], { x: x + 0.065, y: 0.09, ry: Math.PI / 2 }); }
-    for (let i = 0; i < 2; i++) { const x = 0.55 + i * 0.25; b.cyl(0.08, 0.08, 0.22, '#e8f6ff', { x, y: 0.135 }); b.cyl(0.075, 0.075, 0.15, '#5b3426', { x, y: 0.1 }); b.cyl(0.085, 0.085, 0.03, '#9c6a3f', { x, y: 0.26 }); }
-  },
-  /** A recipe book. */
-  book(b) {
-    b.box(0.16, 0.03, 0.2, '#6d55a3', { y: 0.015 }, 0.006);
-    b.flat(0.15, 0.022, 0.19, '#fff7e8', { y: 0.025, x: 0.004 });
-    b.box(0.16, 0.012, 0.2, '#6d55a3', { y: 0.042, rz: 0.04 }, 0.004);
-    b.flat(0.03, 0.004, 0.08, '#ffd23f', { y: 0.05, x: 0.02 });
-  },
-};
-for (const [k, fn] of Object.entries(MODELS)) defineModel('barista:' + k, fn);
-const mk = (k, o) => model('barista:' + k, o);
-const pic = (renderer, k, o = {}) => icon(renderer, 'barista:' + k, o);
+defineModel('latte:cup', (b) => {
+  b.cyl(1.4, 1.3, 0.06, '#fbfaf5', { y: 0.03 });                                   // saucer
+  b.cyl(1.22, 1.24, 0.03, '#efe7da', { y: 0.065 });
+  // the cup: open at the top (outside and inside walls), so you see down into the coffee
+  b.geom(new THREE.CylinderGeometry(1.12, 0.78, 0.62, 32, 1, true), '#fbfaf5', { y: 0.37 });
+  b.geom(new THREE.CylinderGeometry(1.06, 0.74, 0.6, 32, 1, true), '#f1ebe1', { y: 0.38, sx: -1 });   // mirrored: faces inward
+  b.disc(0.78, '#fbfaf5', { y: 0.07 });
+  b.torus(1.1, 0.045, '#ffffff', { y: 0.68, rx: Math.PI / 2 });                    // rim
+  b.cyl(1.08, 1.08, 0.02, '#5a3420', { y: 0.6 });                                   // dark under the surface
+  b.torus(0.28, 0.07, '#fbfaf5', { x: 1.2, y: 0.4, ry: 0 });                       // handle
+});
+defineModel('latte:pitcher', (b) => {
+  b.cyl(0.2, 0.25, 0.46, '#c9d3da', { y: 0.23 });                                  // steel jug
+  b.torus(0.2, 0.02, '#e9eef2', { y: 0.46, rx: Math.PI / 2 });
+  b.cone(0.09, 0.2, '#c9d3da', { x: 0, y: 0.45, z: 0.24, rx: Math.PI / 2.4 }, 10); // spout, toward +z
+  b.box(0.06, 0.32, 0.08, '#8e9ba8', { x: 0, y: 0.25, z: -0.27 }, 0.02);          // handle at the back
+});
 
 export default function create(ctx) {
-  const s3 = stage3d(ctx.el, { scale: SCALE, quality: ctx.quality });
+  const s3 = stage3d(ctx.el, { scale: SCALE, elevation: ELEV, quality: ctx.quality, background: '#f6efe4' });
   const st = s3.ui, view = s3.view, g = s3.g;
-  let needBuild = true;    // the 3D set is (re)built on the next frame
   const pops = new Pops();
-  const learned = new Set();
-  let orders = [];
-  let cup = [];             // ingredient keys in the order added
-  let pourT = 1;            // 0→1 grow animation of the newest layer
-  let busy = null;          // { ing, t, dur }
-  let drain = null;         // { layers, t }
-  let served = [];          // little cups flying to a ticket
-  let spawnT = 0, nextId = 1, streak = 0;
-  let hintT = 0, readT = 0;
-  let pressed = null;
-  let started = false;
-  const L = {};
-  let stations = [];
+  const world = new THREE.Group();
+  s3.add(world);
 
-  /* layout */
+  const L = {};
+  let needBuild = true;
+  const surface = new Surface();
+  const refs = new Map();                     // pattern key → reference surface (simulated ideal pour)
+  const misses = new Map();                   // pattern key → misses in a row (two in a row → a demo)
+  const struggled = new Set();                // patterns you've missed: their ticket shows the tip
+  let order = null;                           // { pattern, who: { species, seed, img }, t }
+  let state = 'wait';                         // wait | pour | demo | judged
+  let milk = MILK, pouring = false, served = 0, nextT = 0.6;
+  let spout = null;                           // where the stream lands, in surface coords { u, v }
+  let lastSpout = null, aim = null;           // view point of the pitcher
+  let demo = null;                            // { tl, t }
+  let verdict = null;                         // { rating, faults, t }
+  let clock = 0, hint = '';
+  const TEX = N * 2;            // the picture is drawn at twice the sim's resolution, sampled smoothly
+  const texData = new Uint8ClampedArray(TEX * TEX * 4);
+  let dirty = true;
+
+  /* ── layout (view units) ────────────────────────────────────────────── */
   function layout() {
     const { W, H } = view;
-    L.wide = W >= 640 && !view.portrait;
-    const pad = 12, gap = 10;
-    if (L.wide) {
-      L.tickets = { x: pad, y: 10, w: W - pad * 2, h: 120 };
-      const cupW = clamp(W * 0.36, 280, 380);
-      L.cupArea = { x: pad, y: 140, w: cupW, h: H - 140 - 72 };
-      const bw = 64, by = H - 64;
-      L.drain = { x: pad + 4, y: by, w: bw, h: 52 };
-      L.hint = { x: pad + cupW - bw - 4, y: by, w: bw, h: 52 };
-      L.serve = { x: L.drain.x + bw + gap, y: by, w: L.hint.x - gap - (L.drain.x + bw + gap), h: 52 };
-      const gx = pad + cupW + 16, gw = W - pad - gx, cols = 5, rows = 2;
-      const sw = (gw - (cols - 1) * gap) / cols, gy = 150, sh = Math.min(116, (H - 12 - gy - (rows - 1) * gap) / rows);
-      stations = STATIONS.map((k, i) => ({ key: k, x: gx + (i % cols) * (sw + gap), y: gy + Math.floor(i / cols) * (sh + gap), w: sw, h: sh }));
-    } else {
-      const tH = clamp(H * 0.17, 118, 150);
-      L.tickets = { x: pad, y: 10, w: W - pad * 2, h: tH };
-      const cols = 4, rows = 3, rowH = clamp(H * 0.088, 58, 82);
-      const gridTop = H - 12 - rows * rowH - (rows - 1) * gap;
-      const sw = (W - pad * 2 - (cols - 1) * gap) / cols;
-      const cell = (i) => ({ x: pad + (i % cols) * (sw + gap), y: gridTop + Math.floor(i / cols) * (rowH + gap), w: sw, h: rowH });
-      stations = STATIONS.map((k, i) => ({ key: k, ...cell(i) }));
-      L.drain = cell(10); L.hint = cell(11);
-      const sy = gridTop - 64;
-      L.serve = { x: W * 0.2, y: sy, w: W * 0.6, h: 52 };
-      L.cupArea = { x: pad, y: 10 + tH + 8, w: W - pad * 2, h: sy - (10 + tH + 8) - 8 };
-    }
-    const a = L.cupArea;
-    L.cupH = clamp(a.h * (L.wide ? 0.72 : 0.6), 90, 180);
-    L.cupW = L.cupH * 0.8;
-    L.cupX = a.x + a.w / 2;
-    L.cupBottom = L.wide ? a.y + a.h / 2 + L.cupH / 2 + 4 : a.y + a.h - 16;
+    const P = view.portrait;
+    L.portrait = P;
+    // the cup's rim is ~1.12 × the coffee's radius and the saucer 1.4 ×
+    L.cupR = P ? Math.min(W * 0.36, H * 0.2) : Math.min(H * 0.3, W * 0.22);
+    L.cup = P ? { x: W / 2, y: H * 0.56 } : { x: Math.max(W * 0.56, 190 + L.cupR * 1.4), y: H * 0.58 };
+    L.farY = P ? H * 0.34 : H * 0.36;                 // the counter's back edge on screen
+    L.ticket = P ? { x: 14, y: 14, w: W - 28, h: 84 } : { x: W - 262, y: 12, w: 248, h: 86 };
+    L.serve = P ? { x: W / 2 + 6, y: H - 70, w: W / 2 - 20, h: 52 } : { x: 18, y: H - 70, w: 156, h: 52 };
+    L.show = P ? { x: 14, y: H - 70, w: W / 2 - 20, h: 52 } : { x: 18, y: H - 128, w: 156, h: 46 };
+    L.meter = P ? { x: 14, y: H - 96, w: W - 28, h: 12 } : { x: 18, y: H - 154, w: 156, h: 12 };
+    L.barista = P ? { x: W * 0.8, y: L.farY } : { x: W * 0.16, y: L.farY };
     needBuild = true;
   }
   layout();
   view.onResize = layout;
 
-  /* orders */
-  function pool() { return DRINKS.filter((d) => d.at <= ctx.elapsed()); }
-  function spawn() {
-    const p = pool();
-    const fresh = p.filter((d) => !learned.has(d.name) && !orders.some((o) => o.drink === d));
-    const waiting = orders.map((o) => o.drink);
-    let d = fresh.length && Math.random() < 0.55 ? pick(fresh) : pick(p);
-    if (waiting.includes(d) && Math.random() < 0.7) d = pick(p);
-    const patience = 15 + d.recipe.length * 4;
-    orders.push({ id: nextId++, drink: d, left: patience, patience, gone: 0, born: 0 });
+  /* ── surface ↔ screen ───────────────────────────────────────────────── */
+  let cupWorld = null, rw = 1, topY = 0;
+  /** View point → surface coords (u right, v toward the customer; the cup is the unit disc). */
+  function toSurface(p) {
+    const w = s3.at(p.x, p.y, topY);
+    return { u: (w.x - cupWorld.x) / rw, v: (w.z - cupWorld.z) / rw };
   }
-  const isPrefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i]);
-  const fits = () => orders.some((o) => !o.gone && isPrefix(cup, o.drink.recipe));
-  const ready = () => orders.find((o) => !o.gone && o.drink.recipe.length === cup.length && isPrefix(cup, o.drink.recipe));
+  function toView(u, v) { return s3.toView(new THREE.Vector3(cupWorld.x + u * rw, topY, cupWorld.z + v * rw)); }
 
-  function ticketRect(i, n = MAX_ORDERS) {
-    const t = L.tickets, gap = 10, w = Math.min(L.wide ? 220 : 999, (t.w - (n - 1) * gap) / n);
-    const total = n * w + (n - 1) * gap;
-    return { x: t.x + (t.w - total) / 2 + i * (w + gap), y: t.y, w, h: t.h };
+  /* ── orders ─────────────────────────────────────────────────────────── */
+  function refFor(p) { if (!refs.has(p.key)) refs.set(p.key, simulate(p)); return refs.get(p.key); }
+  const faces = new Map();
+  function faceImg(who) {
+    if (faces.has(who.seed)) return faces.get(who.seed);
+    const img = new Image();
+    img.src = portrait(s3.renderer, { species: who.species, outfit: who.outfit, seed: who.seed });
+    faces.set(who.seed, img);
+    return img;
   }
+  function nextOrder() {
+    const k = clamp(ctx.elapsed() / ctx.seconds, 0, 1);
+    const top = served < 1 ? 0 : served < 2 ? 1 : k < 0.3 ? 2 : 3;
+    const pool = PATTERNS.filter((p) => p.level <= top);
+    // lean toward the newest pattern you've unlocked
+    const pattern = Math.random() < 0.45 ? pool[pool.length - 1] : pick(pool);
+    const r = Math.random;
+    const who = { species: pick(SPECIES), seed: 'latte' + Math.floor(r() * 1e6), outfit: casualOutfit(r) };
+    order = { pattern, who, t: 0 };
+    refFor(pattern);
+    freshCup();
+    // stuck on this one? show how first
+    if ((misses.get(pattern.key) || 0) >= 2) { misses.set(pattern.key, 0); startDemo(true); } else state = 'pour';
+    ctx.sfx.work('espresso', { dur: 0.6, vol: 0.4 });
+  }
+  function freshCup() { surface.clear(); milk = MILK; dirty = true; verdict = null; }
 
-  /* actions */
-  function addStep(k) {
-    if (ctx.over || !started || drain) return;
-    if (readT > 0) { pops.add('Reading…', L.cupX, L.cupBottom - L.cupH - 12, C.muted, 14); return; }
-    if (busy) return;
-    const ing = ING[k];
-    pressed = { k, t: 0 };
-    if (ing.busy) { busy = { ing: k, t: 0, dur: ing.busy }; ctx.sfx.work(ing.sound, { dur: ing.busy, vol: k === 'milk' ? 0.3 : 0.6 }); return; }
-    ctx.sfx.work(ing.sound, { dur: 0.3, vol: 0.5 });
-    commit(k);
+  /* ── pouring ────────────────────────────────────────────────────────── */
+  function beginPour(p) {
+    if (state !== 'pour' || milk <= 0) return;
+    pouring = true; aim = pitcherPoint(p); spout = toSurface(aim); lastSpout = spout;
+    barista?.loop('pour');
+    ctx.sfx.work('pour', { dur: 0.6, vol: 0.35 });
   }
-  function commit(k) {
-    cup.push(k); pourT = 0;
-    if (!fits()) {
-      streak = 0;
-      ctx.sfx.miss();
-      ctx.sfx.work('slosh', { dur: 0.5, vol: 0.5 });
-      pops.add(`No ${ING[k].name.toLowerCase()} there! Down the drain`, L.cupX, L.cupBottom - L.cupH - 20, C.berryD, 15);
-      drain = { layers: cup, t: 0 };
-      cup = [];
-      barista?.wobble(1);
-    }
+  function endPour() {
+    if (!pouring) return;
+    pouring = false; surface.lift();
+    barista?.loop(null);
+    if (milk <= 0) serve();
   }
+  /** On a phone the stream lands just above your fingertip, so you can see it. */
+  function pitcherPoint(p) { return { x: p.x, y: p.y - (p.e?.pointerType === 'touch' ? 46 : 0) }; }
+
   function serve() {
-    if (ctx.over || !started || drain || busy) return;
-    const o = ready();
-    if (!o) {
-      if (cup.length) pops.add('Not finished yet', L.serve.x + L.serve.w / 2, L.serve.y - 12, C.muted, 14);
+    if (state !== 'pour' || !order) return;
+    if (surface.poured < 0.15) { pops.add('Pour some milk first', L.cup.x, L.cup.y - L.cupR - 20, C.muted, 15); return; }
+    pouring = false; surface.lift();
+    const res = judge(surface, refFor(order.pattern), order.pattern), rating = rate(res.score);
+    verdict = { rating, faults: res.faults, t: 0 };
+    state = 'judged';
+    served++;
+    ctx.add(rating.pts);
+    const key = order.pattern.key;
+    if (rating.key === 'fail' || rating.key === 'poor') { misses.set(key, (misses.get(key) || 0) + 1); struggled.add(key); } else misses.set(key, 0);
+    const tone = rating.key === 'perfect' ? C.leafD : rating.key === 'good' ? C.seaD : C.berryD;
+    pops.add(`${rating.name}${rating.pts ? ` +${rating.pts}` : ''}`, L.cup.x, L.cup.y - L.cupR * 0.9, tone, 24);
+    if (rating.key === 'perfect') { ctx.sfx.good(4); ctx.sfx.serve(); barista?.play('cheer', 1.2); }
+    else if (rating.key === 'good') { ctx.sfx.good(2); ctx.sfx.serve(); barista?.hop(0.6); }
+    else { ctx.sfx.miss(); barista?.wobble(0.8); }
+    nextT = NEXT + 0.6;
+  }
+
+  /* ── the demo: the barista pours it for you on a fresh cup ─────────── */
+  function startDemo(auto = false) {
+    if (!order || state === 'demo') return;
+    freshCup();
+    pouring = false;
+    demo = { tl: timeline(order.pattern.pour), t: -0.6, auto, last: null };
+    state = 'demo';
+    hint = auto ? 'Let me show you how…' : '';
+  }
+  function stepDemo(dt) {
+    demo.t += dt;
+    const tl = demo.tl;
+    if (demo.t < 0) return;
+    if (demo.t > tl.total + 1.4) {          // done: wipe it and hand over
+      demo = null; freshCup(); state = 'pour'; hint = 'Your turn!';
       return;
     }
-    const i = orders.indexOf(o), r = ticketRect(i);
-    served.push({ x0: L.cupX, y0: L.cupBottom - L.cupH / 2, x1: r.x + r.w / 2, y1: r.y + r.h / 2, t: 0, iced: o.drink.iced });
-    o.gone = 1; o.ok = true;
-    learned.add(o.drink.name);
-    streak++;
-    ctx.add(1);
-    ctx.sfx.good(streak); ctx.sfx.serve();
-    pops.add(streak >= 4 ? `${streak} in a row!` : `${o.drink.name}! +1`, r.x + r.w / 2, r.y + r.h + 16, C.leafD, 17);
-    cup = []; pourT = 1;
-    barista?.hop(0.8); barista?.play('serve', 0.8);
-  }
-  function dump() {
-    if (ctx.over || !started || drain || busy || !cup.length) return;
-    ctx.sfx.work('slosh', { dur: 0.4, vol: 0.5 });
-    drain = { layers: cup, t: 0 }; cup = [];
-    barista?.wobble(0.6);
-  }
-  function hint() {
-    if (ctx.over || !started) return;
-    if (hintT > 0) { hintT = 0; return; }
-    hintT = HINT_SHOW; readT = HINT_READ;
-    ctx.sfx.work('scribble', { dur: 0.4, vol: 0.4 });
+    const p = tl.at(Math.min(demo.t, tl.total));
+    const sp = { u: p.u, v: p.v };
+    if (demo.t <= tl.total && p.pouring) {
+      const last = demo.last || sp;
+      surface.pour(dt, sp.u, sp.v, (sp.u - last.u) / dt, (sp.v - last.v) / dt); dirty = true;
+    } else surface.lift();
+    demo.pouring = demo.t <= tl.total && p.pouring;
+    demo.last = sp; demo.say = p.say;
+    spout = sp;
   }
 
-  /* input */
+  /* ── input ──────────────────────────────────────────────────────────── */
+  let downOnCup = false;
   const offPointer = pointer(st, {
     down: (p) => {
-      const s = stations.find((b) => inRect(p, b));
-      if (s) { addStep(s.key); return; }
-      if (inRect(p, L.serve)) { pressed = { k: 'serve', t: 0 }; serve(); return; }
-      if (inRect(p, L.drain)) { pressed = { k: 'drain', t: 0 }; dump(); return; }
-      if (inRect(p, L.hint)) { pressed = { k: 'hint', t: 0 }; hint(); return; }
-      // tapping the tickets also brings up the recipes
-      if (inRect(p, L.tickets) && learnedAll()) hint();
+      if (ctx.over) return;
+      if (inRect(p, L.serve)) { serve(); return; }
+      if (inRect(p, L.show)) { if (state === 'pour') startDemo(false); return; }
+      if (state !== 'pour') return;
+      downOnCup = true;
+      beginPour(p);
     },
+    move: (p) => { if (downOnCup && pouring) aim = pitcherPoint(p); else if (state === 'pour') aim = pitcherPoint(p); },
+    up: () => { downOnCup = false; endPour(); },
   });
-  const learnedAll = () => orders.every((o) => learned.has(o.drink.name));
   const onKey = (e) => {
-    if (e.key >= '0' && e.key <= '9') { e.preventDefault(); addStep(STATIONS[(Number(e.key) + 9) % 10]); }
-    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); serve(); }
-    else if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); dump(); }
-    else if (e.key === 'h' || e.key === 'H' || e.key === '?') hint();
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); serve(); }
+    if (e.key.toLowerCase() === 'h') { e.preventDefault(); if (state === 'pour') startDemo(false); }
   };
   window.addEventListener('keydown', onKey);
 
-  /* update */
+  /* ── update ─────────────────────────────────────────────────────────── */
   function step(dt) {
-    if (busy) {
-      busy.t += dt;
-      if (busy.t >= busy.dur) { const k = busy.ing; busy = null; commit(k); }
+    clock += dt;
+    if (state === 'wait' || state === 'judged') {
+      if (verdict) verdict.t += dt;
+      nextT -= dt;
+      if (nextT <= 0) nextOrder();
     }
-    pourT = Math.min(1, pourT + dt / 0.25);
-    if (drain) { drain.t += dt; if (drain.t > 0.6) drain = null; }
-    hintT = Math.max(0, hintT - dt); readT = Math.max(0, readT - dt);
-    for (const o of orders) {
-      if (o.gone) { o.gone += dt; continue; }
-      o.born += dt;
-      o.left -= dt;
-      if (o.left <= 0) {
-        o.gone = 1; o.ok = false; streak = 0;
-        ctx.sfx.complain();
-        const r = ticketRect(orders.indexOf(o));
-        pops.add('Got tired of waiting', r.x + r.w / 2, r.y + r.h + 16, C.berryD, 14);
-        // the cup may no longer suit anyone
-        if (cup.length && !fits()) { drain = { layers: cup, t: 0 }; cup = []; }
-      }
+    if (order) order.t += dt;
+    if (state === 'demo') stepDemo(dt);
+    if (state === 'pour' && pouring && aim) {
+      const sp = toSurface(aim);
+      const vu = (sp.u - lastSpout.u) / dt, vv = (sp.v - lastSpout.v) / dt;
+      surface.pour(dt, sp.u, sp.v, clamp(vu, -12, 12), clamp(vv, -12, 12)); dirty = true;
+      lastSpout = sp; spout = sp;
+      milk = Math.max(0, milk - dt);
+      if (milk <= 0) endPour();
     }
-    orders = orders.filter((o) => !o.gone || o.gone < 1.45);
-    const live = orders.filter((o) => !o.gone).length;
-    spawnT -= dt;
-    if (live < MAX_ORDERS && orders.length < MAX_ORDERS + 1 && (spawnT <= 0 || live === 0)) {
-      // keep the slots: a gone ticket frees its place once it has faded
-      if (orders.length < MAX_ORDERS) { spawn(); spawnT = live === 0 ? 1.2 : 3.2; }
-    }
-    for (const s of served) s.t += dt;
-    served = served.filter((s) => s.t < 0.5);
-    if (pressed) pressed.t += dt;
     pops.update(dt);
   }
 
-  /* ── the 3D coffee bar ──────────────────────────────────────────────── */
-  const world = new THREE.Group();
-  s3.add(world);
+  /* ── 3D ─────────────────────────────────────────────────────────────── */
+  let barista = null, cup = null, surf = null, tex = null, jug = null, stream = null;
 
-  let barista = null, machine = null, steamKids = [], head = null, stream = null, puffs = [];
-  let cupGroup = null, shell = null, handle = null, layerGroup = null, layerSig = '', layerMeshes = [];
-  let props = [];           // station kit, by station index
-  const D = {};             // 3D dimensions worked out in build()
-  /** World depth (m) covering `u` units of screen height on a level surface. */
-  const depth = (u) => u / (SCALE * s3.sinE);
-
-  function box3(w, h, d, color, round = 0) {
+  function box3(w, h, d, color) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), toonMat({ color }));
     m.userData.ownGeometry = true; m.castShadow = m.receiveShadow = true;
     return m;
   }
-  function own(geo, mat) { const m = new THREE.Mesh(geo, mat); m.userData.ownGeometry = true; m.castShadow = m.receiveShadow = true; return m; }
-  /** A counter whose top (height TOP) covers view x0..x1, from row `back` to below the screen. */
-  function counter(x0, x1, back) {
-    const front = view.H + 60, c = s3.at((x0 + x1) / 2, (back + front) / 2, TOP), d = depth(front - back);
-    const body = box3((x1 - x0) / SCALE, TOP, d, '#9c6a3f'); body.position.set(c.x, TOP / 2, c.z); world.add(body);
-    const top = box3((x1 - x0) / SCALE + 0.02, 0.05, d + 0.02, '#e4b583'); top.position.set(c.x, TOP - 0.02, c.z); world.add(top);
-  }
-
   function build() {
     world.clear();
-    props = []; puffs = []; layerMeshes = []; layerSig = '';
-    const { W } = view, a = L.cupArea;
-    // sizes: the mug (a bit narrower than the 2D one so the machine fits beside it)
-    D.hm = (L.cupH * 0.7) / (SCALE * s3.cosE);
-    D.r1 = (L.cupW / 2) * 0.8 / SCALE; D.r0 = D.r1 * 0.8;
-    // the espresso machine (slimmed down) to the right of the cup, a little behind it
-    const k = L.wide ? 1.25 : 1.6, slim = 0.6;
-    const mx = L.cupX + D.r1 * SCALE + 0.46 * slim * k * SCALE + 4, mRow = L.cupBottom - 14;
-    // the counter's back edge: just behind the machine; on wide screens the
-    // stations' side runs further back, leaving a nook where the barista stands
-    D.back = mRow - 0.26 * slim * k * SCALE * s3.sinE - 8;
-    const wallY = L.wide ? 150 : D.back - 12;
-    world.add(s3.floor('wood', { size: 0.5 }));
-    world.add(s3.wall({ y: wallY, a: '#fbefe0', b: '#ead6bd' }));
-    if (L.wide) {
-      const split = a.x + a.w + 8;
-      counter(-60, split, D.back);
-      counter(split, W + 60, stations[0].y - 10);
-    } else counter(-60, W + 60, D.back);
-    // a shelf of mugs and a sign on the wall (seen on phones, where there's wall to see)
-    if (!L.wide) {
-      const shelf = mk('shelf'); shelf.scale.setScalar(1.3);
-      const foot = s3.at(W / 2, wallY, 0);
-      shelf.position.set(foot.x, (wallY - (a.y + (D.back - a.y) * 0.52)) / (SCALE * s3.cosE), foot.z + 0.12);
-      world.add(shelf);
-      const board = sign('Coffee', { w: 1.3, h: 0.4, bg: '#2f3d36', fg: '#f7f3e3' });
-      board.position.set(foot.x, (wallY - (a.y + (D.back - a.y) * 0.2)) / (SCALE * s3.cosE), foot.z + 0.05);
-      world.add(board);
-    }
-
-    // the cup: a big glass mug on a saucer, filling in layers
-    cupGroup = new THREE.Group();
-    cupGroup.position.copy(s3.at(L.cupX, L.cupBottom, TOP));
-    const glass = toonMat({ color: '#dff1fb', transparent: true, opacity: 0.38, depthWrite: false });
-    const rimMat = toonMat({ color: '#cfe6f2' });
-    const shellGeo = new THREE.CylinderGeometry(D.r1, D.r0, D.hm, 32, 1, true); shellGeo.translate(0, D.hm / 2 + 0.04, 0);
-    shell = own(shellGeo, glass); shell.castShadow = false;
-    const base = own(new THREE.CylinderGeometry(D.r0, D.r0 * 0.96, 0.05, 32), rimMat); base.position.y = 0.045;
-    const rim = own(new THREE.TorusGeometry(D.r1, 0.018, 8, 40), rimMat); rim.rotation.x = Math.PI / 2; rim.position.y = D.hm + 0.04;
-    const saucer = own(new THREE.CylinderGeometry(D.r1 * 1.4, D.r1 * 1.25, 0.04, 36), toonMat({ color: '#fbfaf5' })); saucer.position.y = 0.02;
-    handle = own(new THREE.TorusGeometry(D.hm * 0.2, 0.04, 10, 24, Math.PI), rimMat);
-    handle.rotation.z = -Math.PI / 2; handle.rotation.y = 0.5; handle.position.set(D.r1 * 0.8, D.hm * 0.55, D.r1 * 0.45);
-    layerGroup = new THREE.Group(); layerGroup.position.y = 0.07;
-    cupGroup.add(saucer, base, layerGroup, shell, rim, handle);
-    world.add(cupGroup);
-
-    machine = new THREE.Group();
-    const inner = espressoProp(); inner.position.y = -0.9;
-    inner.traverse((o) => { if (o.isMesh && o.material?.isMeshBasicMaterial) o.userData.ownGeometry = true; });
-    steamKids = inner.children.slice(1);
-    const tick = inner.userData.tick; inner.userData.tick = (dt, t) => { tick(dt, t); for (const s of steamKids) s.visible = !!busy; };
-    machine.add(inner); machine.scale.set(k * slim, k, k * slim);
-    machine.position.copy(s3.at(mx, mRow, TOP));
-    world.add(machine);
-    // its group head on an arm over the cup
-    D.headY = TOP + D.hm + 0.26;
-    head = new THREE.Group();
-    const gh = own(new THREE.CylinderGeometry(0.09, 0.07, 0.1, 20), toonMat({ color: '#9aa7b1' }));
-    const spout = own(new THREE.CylinderGeometry(0.03, 0.02, 0.06, 10), toonMat({ color: '#5c6670' })); spout.position.y = -0.07;
-    const reach = machine.position.x - cupGroup.position.x, mTop = TOP + 0.62 * k;
-    const arm = box3(reach, 0.07, 0.09, '#c9d3da'); arm.position.set(reach / 2, 0.02, 0);
-    const post = box3(0.09, D.headY - mTop, 0.09, '#c9d3da'); post.position.set(reach, 0.02 - (D.headY - mTop) / 2, 0);
-    const knob = own(new THREE.SphereGeometry(0.05, 10, 8), toonMat({ color: '#e8505b' })); knob.position.set(reach * 0.5, 0.08, 0);
-    head.add(gh, spout, arm, post, knob);
-    head.position.set(cupGroup.position.x, D.headY, cupGroup.position.z);
-    world.add(head);
-    stream = own(new THREE.CylinderGeometry(0.022, 0.022, 1, 10), toonMat({ color: '#4a2a17' }));
-    stream.castShadow = false; stream.visible = false;
-    world.add(stream);
-    const puffMat = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.6, depthWrite: false });
-    puffMat.userData.outlineParameters = { visible: false };
-    for (let i = 0; i < 5; i++) { const p = own(new THREE.SphereGeometry(0.06, 8, 6), puffMat.clone()); p.castShadow = false; p.visible = false; puffs.push(p); world.add(p); }
-
-    // each station's kit on a mat on the counter
-    stations.forEach((s) => {
-      const mat = box3((s.w - 6) / SCALE, 0.02, depth(s.h - 6), '#fff3e0');
-      mat.position.copy(s3.at(s.x + s.w / 2, s.y + s.h / 2, TOP + 0.01)); world.add(mat);
-      const m = mk(s.key);
-      m.geometry.computeBoundingBox();
-      const sz = m.geometry.boundingBox.getSize(new THREE.Vector3());
-      const kk = Math.min((s.w * 0.6) / SCALE / sz.x, (s.h * 0.62) / (sz.y * SCALE * s3.cosE + sz.z * SCALE * s3.sinE));
-      m.scale.setScalar(kk);
-      m.rotation.y = -0.35;
-      m.position.copy(s3.at(s.x + s.w / 2, s.y + s.h * 0.66, TOP + 0.02));
-      m.userData.y = m.position.y;
-      world.add(m); props.push(m);
-    });
-
-    // the barista, behind the counter left of the cup
+    const { W, H } = view;
+    const far = s3.at(0, L.farY, 0).z, near = s3.at(0, H + 60, 0).z;
+    // the counter (its top is y = 0), the floor and wall behind it
+    const ct = box3(W / SCALE + 2, COUNTER, near - far, '#c98f5a'); ct.position.set(W / SCALE / 2, -COUNTER / 2, (far + near) / 2); world.add(ct);
+    const top = box3(W / SCALE + 2.04, 0.05, near - far + 0.04, '#e4b583'); top.position.set(W / SCALE / 2, -0.02, (far + near) / 2); world.add(top);
+    const floor = s3.floor('checker', { size: 0.45 }); floor.position.y = -COUNTER; world.add(floor);
+    const wall = s3.wall({ y: L.farY - 1.6 * s3.sinE * SCALE }); wall.position.y -= COUNTER; world.add(wall);
+    // the cup: radius rw so the surface fills the view circle
+    cupWorld = s3.at(L.cup.x, L.cup.y, 0);
+    rw = L.cupR / SCALE;
+    topY = 0.645 * rw;
+    // re-aim so the surface (not the saucer) is centred where the layout wants it
+    cupWorld = s3.at(L.cup.x, L.cup.y, topY); cupWorld.y = 0;
+    cup = model('latte:cup'); cup.scale.setScalar(rw); cup.position.copy(cupWorld); cup.rotation.y = -0.4; world.add(cup);
+    tex = new THREE.DataTexture(texData, TEX, TEX, THREE.RGBAFormat);
+    tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter; tex.flipY = false;
+    const mat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
+    mat.userData.outlineParameters = { visible: false };
+    surf = new THREE.Mesh(new THREE.CircleGeometry(rw * 1.0, 64), mat);
+    surf.userData.ownGeometry = true;
+    surf.rotation.x = -Math.PI / 2;
+    surf.position.set(cupWorld.x, topY + 0.004, cupWorld.z);
+    world.add(surf);
+    dirty = true;
+    // the pitcher and its stream
+    jug = model('latte:pitcher'); jug.scale.setScalar(rw * 0.95); world.add(jug);
+    stream = new THREE.Mesh(new THREE.CylinderGeometry(0.035 * rw, 0.05 * rw, 1, 10), toonMat({ color: '#fdf6e8' }));
+    stream.userData.ownGeometry = true; stream.visible = false; world.add(stream);
+    // the barista behind the counter
     if (barista) s3.dropCritter(barista);
-    barista = s3.critter({ ...ctx.critter, scale: L.wide ? 0.95 : 1.1 });
-    const bx = Math.max(a.x + 40, Math.min(L.cupX - D.r1 * SCALE - 46, a.x + a.w * 0.2));
-    const spot = s3.under(bx, D.back - 30, TOP);
-    barista.setPosition(spot.x, 0, spot.z);
-    barista.object.rotation.y = 0.3; barista.face(0.3);
+    barista = s3.critter({ ...ctx.critter, scale: 0.9 });
+    const spot = s3.at(L.barista.x, L.farY, 0); barista.setPosition(spot.x, -COUNTER, spot.z - 0.45);
+    barista.object.rotation.y = 0.35; barista.targetHeading = 0.35;
   }
 
-  /** Rebuild the liquid layers when the cup's contents change. */
-  function syncLayers(layers) {
-    const sig = layers.join(',');
-    if (sig === layerSig) return;
-    layerSig = sig;
-    for (const m of layerMeshes) { m.removeFromParent(); m.traverse((o) => o.geometry?.dispose()); }
-    layerMeshes = [];
-    const total = layers.reduce((s, k) => s + ING[k].h, 0);
-    const sc = Math.min(L.cupH / 92, (L.cupH * 0.94) / Math.max(1, total));
-    const rAt = (y) => (D.r0 + (D.r1 - D.r0) * clamp(y / D.hm, 0, 1)) * 0.93;
-    let y = 0;
-    layers.forEach((k, i) => {
-      const ing = ING[k], h = Math.max(0.01, (ing.h * sc / L.cupH) * D.hm * 0.96);
-      const geo = new THREE.CylinderGeometry(rAt(y + h), rAt(y), h, 28); geo.translate(0, h / 2, 0);
-      const mat = k === 'ice' ? toonMat({ color: '#cfeaf8', transparent: true, opacity: 0.7 }) : toonMat({ color: ing.color });
-      const m = own(geo, mat); m.castShadow = false;
-      m.position.y = y;
-      if (k === 'ice') {
-        for (let j = 0; j < 4; j++) {
-          const c = own(new THREE.BoxGeometry(h * 0.7, h * 0.7, h * 0.7), toonMat({ color: '#f4fbff' }));
-          const ang = j * 1.7 + 0.4; c.position.set(Math.cos(ang) * rAt(y) * 0.5, h * 0.5, Math.sin(ang) * rAt(y) * 0.5); c.rotation.set(j, j * 0.7, 0);
-          m.add(c);
+  /** Foam field → the surface texture (crema darkens toward the rim). */
+  function paint() {
+    for (let j = 0; j < TEX; j++) {
+      const y = (j + 0.5) / TEX * 2 - 1;
+      for (let i = 0; i < TEX; i++) {
+        // texture rows run from the near side (v = 0 at the customer's edge after the disc is laid flat)
+        const x = (i + 0.5) / TEX * 2 - 1, o = ((TEX - 1 - j) * TEX + i) * 4;
+        const r2 = x * x + y * y;
+        const rim = clamp((r2 - 0.55) / 0.45, 0, 1);
+        const f = clamp((surface.sample(x * 0.995, y * 0.995) - 0.32) / 0.36, 0, 1), fo = f * f * (3 - 2 * f);
+        for (let c = 0; c < 3; c++) {
+          const cr = lerp(CREMA[c], CREMA_RIM[c], rim);
+          texData[o + c] = lerp(cr, FOAM[c], fo);
         }
+        texData[o + 3] = 255;
       }
-      if (k === 'foam' || k === 'cream') {
-        const r = rAt(y + h), n = k === 'cream' ? 7 : 9, br = k === 'cream' ? r * 0.36 : r * 0.2;
-        for (let j = 0; j < n; j++) {
-          const b = own(new THREE.SphereGeometry(br, 10, 8), toonMat({ color: k === 'cream' ? '#ffffff' : '#fff6ea' }));
-          const ang = (j / n) * Math.PI * 2; b.position.set(Math.cos(ang) * r * 0.55, h, Math.sin(ang) * r * 0.55); b.scale.y = 0.7;
-          m.add(b);
-        }
-        if (k === 'cream') { const tip = own(new THREE.SphereGeometry(r * 0.42, 12, 8), toonMat({ color: '#ffffff' })); tip.position.y = h + r * 0.25; m.add(tip); }
-      }
-      if (k === 'caramel') {
-        const ring = own(new THREE.TorusGeometry(rAt(y + h) * 0.6, 0.015, 6, 24), toonMat({ color: '#a8641c' })); ring.rotation.x = Math.PI / 2; ring.position.y = h + 0.01; m.add(ring);
-      }
-      layerGroup.add(m); layerMeshes.push(m);
-      y += h;
-    });
-    D.fillTop = y;
+    }
+    tex.needsUpdate = true;
+    dirty = false;
+  }
+
+  const UP = new THREE.Vector3(0, 1, 0);
+  function placeJug() {
+    const active = state === 'demo' ? demo && demo.t >= 0 : state === 'pour';
+    jug.visible = !!active;
+    stream.visible = false;
+    if (!active) return;
+    let sp = spout, isPouring = false;
+    if (state === 'demo') isPouring = !!demo.pouring;
+    else { if (aim) sp = toSurface(aim); isPouring = pouring; }
+    if (!sp) sp = { u: 0.15, v: -0.2 };
+    const land = new THREE.Vector3(cupWorld.x + sp.u * rw, topY, cupWorld.z + sp.v * rw);
+    // the jug hangs up and behind the spot it pours on, tipping forward as it pours
+    const tilt = isPouring ? 0.75 : 0.35;
+    jug.position.set(land.x + 0.06 * rw, land.y + (isPouring ? 0.32 : 0.48) * rw, land.z - 0.42 * rw);
+    jug.rotation.set(tilt, 0, 0);
+    if (isPouring) {
+      const tip = jug.localToWorld(new THREE.Vector3(0, 0.52, 0.34));
+      const dir = land.clone().sub(tip), len = dir.length();
+      stream.visible = true;
+      stream.scale.set(1, len, 1);
+      stream.position.copy(tip).addScaledVector(dir, 0.5);
+      stream.quaternion.setFromUnitVectors(UP, dir.normalize());
+    }
   }
 
   function draw() {
     if (needBuild) { needBuild = false; build(); }
-    const now = performance.now() / 1000;
-    const layers = drain ? drain.layers : cup;
-    syncLayers(layers);
-    const tilt = drain ? ease(drain.t / 0.5) : 0;
-    layerMeshes.forEach((m, i) => { m.scale.y = i === layerMeshes.length - 1 && !drain ? Math.max(0.02, ease(pourT)) : 1; });
-    layerGroup.scale.y = Math.max(0.001, 1 - tilt);
-    cupGroup.rotation.z = -tilt * 0.9;
-    const iced = cup[0] === 'ice' || (drain && drain.layers[0] === 'ice');
-    handle.visible = !iced;
-    // the stream from the group head while a step pours in
-    const top = layers.length ? layerMeshes.reduce((s, m) => s + m.geometry.parameters.height * m.scale.y, 0) : 0;
-    const surface = TOP + 0.07 + top * layerGroup.scale.y;
-    const pouringKey = busy ? busy.ing : (!drain && pourT < 1 && cup.length && ['water', 'cold', 'choc', 'vanilla', 'caramel'].includes(cup[cup.length - 1]) ? cup[cup.length - 1] : null);
-    stream.visible = !!pouringKey;
-    if (pouringKey) {
-      const yTop = D.headY - 0.09, len = Math.max(0.02, yTop - surface);
-      stream.material = toonMat({ color: ING[pouringKey].color === '#ffffff' ? '#f1e8dc' : ING[pouringKey].color });
-      stream.scale.set(1, len, 1);
-      stream.position.set(head.position.x, surface + len / 2, head.position.z);
-    }
-    // steam over the cup while a shot pulls or the milk steams
-    puffs.forEach((p, i) => {
-      p.visible = !!busy;
-      if (!busy) return;
-      const k = (now * 0.9 + i / puffs.length) % 1;
-      p.position.set(cupGroup.position.x + Math.sin(now * 2 + i * 2) * D.r1 * 0.5, surface + 0.1 + k * 0.7, cupGroup.position.z + Math.cos(i * 1.3) * D.r1 * 0.3);
-      p.scale.setScalar(0.7 + k * 1.4);
-      p.material.opacity = 0.65 * (1 - k);
-    });
-    props.forEach((m, i) => {
-      const s = stations[i], down = pressed && pressed.k === s.key && pressed.t < 0.12, working = busy && busy.ing === s.key;
-      m.position.y = m.userData.y - (down ? 0.03 : 0) + (working ? Math.abs(Math.sin(now * 18)) * 0.02 : 0);
-    });
-    if (barista && busy && !barista.gesture) barista.play('pour', busy.dur);
+    if (dirty) paint();
+    placeJug();
     s3.render();
 
-    // 2D overlay: tickets, station labels, buttons, notes
-    const { W } = view, a = L.cupArea;
+    /* overlay */
     s3.begin2d();
-    orders.forEach(drawTicket);
-    if (!orders.length) text(g, 'Waiting for orders…', L.tickets.x + L.tickets.w / 2, L.tickets.y + L.tickets.h / 2, { size: 16, color: C.ink, weight: 700, stroke: '#fff' });
-    stations.forEach((s, i) => {
-      const ing = ING[s.key];
-      const down = pressed && pressed.k === s.key && pressed.t < 0.12;
-      const working = busy && busy.ing === s.key;
-      g.save();
-      rr(g, s.x + 2, s.y + 2, s.w - 4, s.h - 4, 14);
-      if (busy && !working) { g.fillStyle = 'rgba(246,239,228,.4)'; g.fill(); }
-      if (down) { g.fillStyle = 'rgba(255,214,107,.35)'; g.fill(); }
-      g.lineWidth = working ? 4 : 2; g.strokeStyle = working ? C.leaf : 'rgba(156,106,63,.45)'; g.stroke();
-      g.restore();
-      fitText(ing.short, s.x + s.w / 2, s.y + s.h - Math.min(11, s.h * 0.15), s.w - 8, Math.min(13, s.h * 0.19), { color: C.ink, weight: 800, stroke: '#fff' });
-      if (L.wide) text(g, String((i + 1) % 10), s.x + 13, s.y + 14, { size: 11, color: C.muted, weight: 800, stroke: '#fff' });
-      if (working) { const k = clamp(busy.t / busy.dur, 0, 1); box(g, s.x + 8, s.y + s.h - 6, (s.w - 16) * k, 4, { fill: C.leaf, r: 2 }); }
-    });
-    const can = !!ready() && !busy && !drain;
-    const pk = (k) => pressed && pressed.k === k && pressed.t < 0.12;
-    drawButton(L.serve, { label: can ? 'Serve it!' : 'Serve', pic: 'bell', fill: can ? C.leaf : '#fff', stroke: can ? C.leafD : C.line, color: can ? '#fff' : C.muted, on: can, down: pk('serve') });
-    drawButton(L.drain, { label: 'Tip out', pic: 'tip', on: cup.length > 0 && !busy, down: pk('drain') });
-    drawButton(L.hint, { label: hintT > 0 ? 'Hide' : 'Recipes', pic: 'book', fill: hintT > 0 ? C.paper2 : '#fff', down: pk('hint') });
-    // what's going into the cup
-    if (busy) {
-      const k = clamp(busy.t / busy.dur, 0, 1), bx = L.cupX + L.cupW * 0.5 + 40, by = L.cupBottom - L.cupH * 0.55;
-      circle(g, bx, by, 22, '#fff', C.line, 2);
-      g.drawImage(pic(s3.renderer, busy.ing), bx - 17, by - 17, 34, 34);
-      g.beginPath(); g.arc(bx, by, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); g.strokeStyle = C.leaf; g.lineWidth = 4; g.stroke();
+    const P = L.portrait;
+    // the order ticket: who, what, and what it should look like
+    if (order) {
+      const T = L.ticket;
+      box(g, T.x, T.y, T.w, T.h, { fill: '#fffaf0', stroke: C.line, r: 14, shadow: 4 });
+      const tr = T.h / 2 - 9;
+      drawThumb(refFor(order.pattern), T.x + 9 + tr, T.y + T.h / 2, tr);
+      const tx = T.x + tr * 2 + 26, img = faceImg(order.who);
+      if (img.complete) { g.save(); rr(g, tx, T.y + 8, 30, 30, 15); g.clip(); g.drawImage(img, tx, T.y + 8, 30, 30); g.restore(); }
+      text(g, 'would like a', tx + 38, T.y + 23, { size: 11, color: C.muted, weight: 800, align: 'left' });
+      text(g, order.pattern.name, tx, T.y + 54, { size: 18, color: C.ink, weight: 800, align: 'left' });
+      if (struggled.has(order.pattern.key)) wrapText(order.pattern.tip, tx, T.y + 72, T.x + T.w - tx - 8, 12);
     }
-    if (readT > 0) text(g, 'Reading the recipes…', L.cupX, a.y + 10, { size: 13, color: C.seaD, weight: 700, stroke: '#fff' });
-    // drinks flying to the tickets
-    for (const s of served) {
-      const k = ease(s.t / 0.45), sz = 44 - 18 * k;
-      g.drawImage(pic(s3.renderer, 'drink', { iced: !!s.iced }), lerp(s.x0, s.x1, k) - sz / 2, lerp(s.y0, s.y1, k) - Math.sin(k * Math.PI) * 40 - sz / 2, sz, sz);
+    // the demo's captions
+    if (state === 'demo' && demo) {
+      // captions below the cup, clear of the ticket
+      const msg = demo.t < 0 ? hint || 'Watch the barista…' : demo.say || 'Watch the barista…';
+      chip(msg, L.cup.x, Math.min(view.H - 20, L.cup.y + L.cupR * 0.95 + 30), C.seaD);
+    } else if (state === 'pour' && hint) {
+      chip(hint, L.cup.x, Math.min(view.H - 20, L.cup.y + L.cupR * 0.95 + 30), C.leafD);
+      if (surface.poured > 0.3) hint = '';
     }
+    // milk left
+    const M = L.meter, k = milk / MILK;
+    box(g, M.x, M.y, M.w, M.h, { fill: '#fff', r: M.h / 2, stroke: C.line, lw: 2 });
+    if (k > 0.02) box(g, M.x + 2, M.y + 2, (M.w - 4) * k, M.h - 4, { fill: k < 0.25 ? C.berry : C.sea, r: (M.h - 4) / 2 });
+    text(g, 'Milk left', M.x, M.y - 9, { size: 11, color: C.muted, weight: 800, align: 'left' });
+    // buttons
+    const canServe = state === 'pour' && surface.poured >= 0.15;
+    button(L.serve, 'Serve', canServe ? C.leaf : '#d8cbbb', canServe ? C.leafD : '#bfae98', '#fff');
+    button(L.show, 'Show me', state === 'pour' ? '#fff' : '#f2ebe0', C.line, state === 'pour' ? C.seaD : C.muted);
+    // the verdict
+    if (verdict && verdict.faults.length && verdict.t < NEXT + 0.6) text(g, verdict.faults[0], L.cup.x, L.cup.y + L.cupR * 0.95 + 26, { size: 14, color: C.berryD, weight: 800, stroke: '#fff' });
     pops.draw(g);
-    const el = ctx.elapsed();
-    if (started && el < 7) {
-      const msg = cup.length ? 'Keep following the recipe, then Serve' : 'Tap the stations in the order on the ticket';
-      text(g, msg, L.cupX, a.y + (L.wide ? 2 : 4), { size: 13, color: C.ink, weight: 700, alpha: 1 - Math.max(0, el - 5) / 2, stroke: '#fff' });
+    // first-time hint
+    if (ctx.elapsed() < 7 && state === 'pour' && surface.poured < 0.2 && !hint) {
+      chip(P ? 'Hold on the cup to pour' : 'Hold on the cup to pour, and move to draw', L.cup.x, Math.min(view.H - 20, L.cup.y + L.cupR * 0.95 + 30), C.ink);
     }
   }
 
-  function fitText(s, x, y, maxW, size, opts = {}) {
-    g.font = `${opts.weight || 700} ${size}px Fredoka, Nunito, system-ui, sans-serif`;
-    const w = g.measureText(s).width;
-    text(g, s, x, y, { ...opts, size: w > maxW ? Math.max(9, size * maxW / w) : size });
+  function button(r, label, fill, edge, ink) {
+    box(g, r.x, r.y, r.w, r.h, { fill, stroke: edge, r: r.h / 2, lw: 3, shadow: 4 });
+    text(g, label, r.x + r.w / 2, r.y + r.h / 2 + 1, { size: 17, color: ink, weight: 800 });
   }
-
-  function drawTicket(o, i) {
-    const r = ticketRect(i);
-    const fade = o.gone ? clamp(o.gone - 1, 0, 0.45) / 0.45 : 0;
-    const enter = ease(o.born / 0.3);
-    g.save();
-    g.globalAlpha = (1 - fade) * (o.gone ? 1 : enter);
-    const dy = o.gone ? -fade * 30 : (1 - enter) * -20;
-    g.translate(0, dy);
-    const k = o.left / o.patience;
-    const match = !o.gone && cup.length && isPrefix(cup, o.drink.recipe);
-    box(g, r.x, r.y, r.w, r.h, { fill: o.gone ? (o.ok ? '#e6f7ee' : '#fde7ea') : C.paper, stroke: match ? C.leaf : C.line, lw: match ? 4 : 3, r: 12, shadow: 4 });
-    // ticket pin + name
-    circle(g, r.x + r.w / 2, r.y + 2, 5, C.berry);
-    g.drawImage(pic(s3.renderer, 'drink', { iced: !!o.drink.iced }), r.x + 4, r.y + 6, 30, 30);
-    fitText(o.drink.name, r.x + r.w / 2 + 10, r.y + 23, r.w - 50, 16, { weight: 700, color: C.ink });
-    // the recipe, or how many steps it has
-    const show = !learned.has(o.drink.name) || hintT > 0;
-    const steps = o.drink.recipe, n = steps.length;
-    const sz = Math.min(24, (r.w - 16) / n - 2), sp = sz + 2;
-    const rowY = r.y + r.h * 0.55;
-    steps.forEach((s, j) => {
-      const x = r.x + r.w / 2 + (j - (n - 1) / 2) * sp;
-      const done = match && j < cup.length;
-      circle(g, x, rowY, sz / 2 + 1, done ? '#dff3e7' : '#fff', done ? C.leaf : C.line, 2);
-      if (show || done) { const is = sz * 0.95; g.drawImage(pic(s3.renderer, s), x - is / 2, rowY - is / 2, is, is); }
-      else text(g, '?', x, rowY + 1, { size: sz * 0.6, color: C.muted, weight: 800 });
-    });
-    if (show && !learned.has(o.drink.name) && !o.gone) text(g, 'New recipe', r.x + r.w / 2, rowY + sz / 2 + 10, { size: 10, color: C.seaD, weight: 700 });
-    // patience
-    const bx = r.x + 10, bw = r.w - 20, by = r.y + r.h - 16;
-    box(g, bx, by, bw, 8, { fill: C.line, r: 4 });
-    if (!o.gone) box(g, bx, by, Math.max(8, bw * k), 8, { fill: k > 0.5 ? C.leaf : k > 0.25 ? C.butter : C.berry, r: 4 });
-    if (o.gone) text(g, o.ok ? '✓' : '✗', r.x + r.w - 16, r.y + 22, { size: 22, color: o.ok ? C.leafD : C.berryD, weight: 800 });
+  function chip(msg, x, y, color) {
+    g.save(); g.font = '800 14px Fredoka, Nunito, system-ui, sans-serif';
+    const w = Math.min(view.W - 20, g.measureText(msg).width + 28); g.restore();
+    box(g, clamp(x - w / 2, 10, view.W - w - 10), y - 15, w, 30, { fill: '#fffaf0', stroke: color, r: 15, lw: 2 });
+    text(g, msg, clamp(x, w / 2 + 10, view.W - w / 2 - 10), y, { size: 14, color, weight: 800 });
+  }
+  function wrapText(str, x, y, w, lh) {
+    g.save(); g.font = '700 10.5px Nunito, system-ui, sans-serif';
+    const words = str.split(' '); let line = '', yy = y;
+    for (const wd of words) { const t = line ? line + ' ' + wd : wd; if (g.measureText(t).width > w && line) { text(g, line, x, yy, { size: 10.5, color: C.muted, weight: 700, align: 'left' }); line = wd; yy += lh; } else line = t; }
+    if (line) text(g, line, x, yy, { size: 10.5, color: C.muted, weight: 700, align: 'left' });
     g.restore();
   }
-
-  function drawButton(r, { label, pic: p, fill = '#fff', stroke = C.line, color = C.muted, on = true, down = false }) {
-    const dy = down ? 3 : 0;
-    g.save(); if (!on) g.globalAlpha = 0.55;
-    box(g, r.x, r.y + dy, r.w, r.h, { fill, r: 14, shadow: down ? 0 : 4, stroke });
-    const es = Math.min(38, r.h * 0.62);
-    if (p) g.drawImage(pic(s3.renderer, p), r.x + r.w / 2 - es / 2, r.y + r.h / 2 - (label ? r.h * 0.14 : 0) - es / 2 + dy, es, es);
-    if (label) fitText(label, r.x + r.w / 2, r.y + r.h - Math.min(11, r.h * 0.16) + dy, r.w - 8, Math.min(12, r.h * 0.18), { color, weight: 700 });
-    g.restore();
+  /** A little picture of what the pattern should look like. */
+  const thumbs = new Map();
+  function drawThumb(ref, cx, cy, r) {
+    let c = thumbs.get(ref);
+    if (!c) {
+      c = document.createElement('canvas'); c.width = c.height = 72;
+      const tg = c.getContext('2d'), img = tg.createImageData(72, 72);
+      for (let y = 0; y < 72; y++) for (let x = 0; x < 72; x++) {
+        const u = (x + 0.5) / 72 * 2 - 1, v = (y + 0.5) / 72 * 2 - 1, o = (y * 72 + x) * 4;
+        if (u * u + v * v >= 1) { img.data[o + 3] = 0; continue; }
+        const f = clamp((ref.sample(u, v) - 0.3) / 0.4, 0, 1);
+        for (let k = 0; k < 3; k++) img.data[o + k] = lerp(CREMA[k], FOAM[k], f);
+        img.data[o + 3] = 255;
+      }
+      tg.putImageData(img, 0, 0);
+      thumbs.set(ref, c);
+    }
+    circle(g, cx, cy, r + 4, '#fff', C.line, 2);
+    g.drawImage(c, cx - r, cy - r, r * 2, r * 2);
   }
 
   return {
-    start() { started = true; spawn(); spawn(); spawnT = 4; },
-    update(dt) { if (!ctx.over && started) step(dt); else pops.update(dt); },
+    update(dt) { if (!ctx.over) step(dt); else pops.update(dt); },
     draw,
+    end() { pouring = false; },
     /** For automated play-tests. */
     peek() {
       return {
-        view: { ...view }, L, stations: stations.map((s) => ({ ...s })),
-        orders: orders.filter((o) => !o.gone).map((o) => ({ id: o.id, name: o.drink.name, recipe: [...o.drink.recipe], left: o.left, shown: !learned.has(o.drink.name) || hintT > 0 })),
-        cup: [...cup], busy: busy ? { ...busy } : null, draining: !!drain, reading: readT, hint: hintT, ready: !!ready(),
+        view: { ...view }, L, state, milk, served, pattern: order?.pattern.key,
+        cupView: (u, v) => (cupWorld ? toView(u, v) : null),
+        pour: order ? order.pattern.pour : null, verdict: verdict && { rating: verdict.rating.key, faults: verdict.faults },
       };
     },
     destroy() { offPointer(); window.removeEventListener('keydown', onKey); s3.destroy(); },
